@@ -1,0 +1,3 @@
+- extension: polish-statusline
+  enabled: true
+  variant: compact

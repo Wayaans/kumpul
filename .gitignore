@@ -1,0 +1,6 @@
+node_modules/
+extensions/**/node_modules/
+
+# pi package install caches (when testing git install locally)
+.pi/git/
+.pi/npm/
