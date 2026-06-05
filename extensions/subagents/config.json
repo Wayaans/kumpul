@@ -1,0 +1,5 @@
+{
+  "maxConcurrency": 4,
+  "allowProjectAgents": false,
+  "allowProjectAgentOverrides": false
+}

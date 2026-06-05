@@ -12,7 +12,7 @@ On session start, replaces the built-in footer with a themed layout:
 
 Context usage renders as a `█░` bar colored with `success` / `warning` / `error` from the theme. Path basename uses `text`, parent segments `dim`. Branch uses `accent` (or `warning` when detached). Model id uses `accent`; thinking level uses theme `thinking*` tokens when the model supports reasoning.
 
-Extension statuses from `ctx.ui.setStatus()` still appear on an extra dim line when present.
+Extension statuses from `ctx.ui.setStatus()` appear on an extra dim line when present, except **codex-usage** (`◷ NN%`), which is shown on the model line immediately left of the provider prefix.
 
 ## Commands
 

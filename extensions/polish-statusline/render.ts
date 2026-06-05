@@ -8,6 +8,8 @@ export type FooterVariant = "codex" | "compact" | "minimal";
 
 const BAR_WIDTH = 10;
 const SEP = " │ ";
+/** Status key from extensions/codex-usage — rendered on the model line, not the extension-status row. */
+const CODEX_USAGE_STATUS_KEY = "codex-usage";
 
 function formatCwd(cwd: string, home: string | undefined): string {
 	if (!home) return cwd;
@@ -123,6 +125,12 @@ function tokenSegment(
 	return theme.fg("dim", parts.join(" "));
 }
 
+function codexUsageSegment(footerData: ReadonlyFooterDataProvider, theme: Theme): string | undefined {
+	const text = footerData.getExtensionStatuses().get(CODEX_USAGE_STATUS_KEY);
+	if (!text) return undefined;
+	return theme.fg("dim", sanitizeStatus(text));
+}
+
 function modelSegment(ctx: ExtensionContext, theme: Theme, footerData: ReadonlyFooterDataProvider): string {
 	const modelId = ctx.model?.id ?? "no-model";
 	let label = theme.fg("accent", modelId);
@@ -138,6 +146,10 @@ function modelSegment(ctx: ExtensionContext, theme: Theme, footerData: ReadonlyF
 	}
 	if (footerData.getAvailableProviderCount() > 1 && ctx.model) {
 		label = theme.fg("muted", `(${ctx.model.provider}) `) + label;
+	}
+	const usage = codexUsageSegment(footerData, theme);
+	if (usage) {
+		label = usage + divider(theme) + label;
 	}
 	return label;
 }
@@ -171,6 +183,7 @@ function extensionStatusLine(
 	const statuses = footerData.getExtensionStatuses();
 	if (statuses.size === 0) return undefined;
 	const sorted = Array.from(statuses.entries())
+		.filter(([key]) => key !== CODEX_USAGE_STATUS_KEY)
 		.sort(([a], [b]) => a.localeCompare(b))
 		.map(([, text]) => sanitizeStatus(text));
 	return truncateToWidth(theme.fg("dim", sorted.join(divider(theme))), width, theme.fg("dim", "..."));
