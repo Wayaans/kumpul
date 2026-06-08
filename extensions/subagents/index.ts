@@ -83,7 +83,7 @@ export default function (pi: ExtensionAPI): void {
 		promptSnippet: "Run subagents for delegated tasks",
 		promptGuidelines: [
 			"Parallel tool calls are your primary parallelism mechanism — put multiple independent read/fetch/search calls in one function_calls block. Don't use subagents to parallelize simple I/O.",
-			"Use subagent to delegate reasoning: **agent** for isolated implementation, **reviewer** for read-only code review",
+			"Use subagent to delegate reasoning: **agent** as the general subagent for any delegated task, **reviewer** for read-only code review",
 			"For multiple independent subagent tasks, emit multiple `subagent` tool calls in the same turn — they run in parallel automatically.",
 			"Subagents have NO context from the current conversation — include ALL necessary context in the task description",
 		],

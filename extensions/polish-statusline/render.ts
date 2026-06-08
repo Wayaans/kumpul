@@ -3,6 +3,7 @@ import type { ExtensionContext, ReadonlyFooterDataProvider } from "@earendil-wor
 import { buildSessionContext, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { isAbsolute, relative, resolve, sep as pathSep } from "node:path";
+import { isGitInstalled, readGitRepoStatus } from "./git-status.ts";
 
 export type FooterVariant = "codex" | "compact" | "minimal";
 
@@ -163,13 +164,34 @@ function contextSegment(ctx: ExtensionContext, theme: Theme): string {
 	return bar + windowLabel;
 }
 
+function gitSegment(
+	cwd: string,
+	footerData: ReadonlyFooterDataProvider,
+	theme: Theme,
+): string | undefined {
+	if (!isGitInstalled()) return undefined;
+
+	const branch = footerData.getGitBranch();
+	if (!branch) return undefined;
+
+	const branchColor = branch === "detached" ? "warning" : "accent";
+	const markers: string[] = [];
+	const status = readGitRepoStatus(cwd);
+	if (status) {
+		if (status.unstaged) markers.push(theme.fg("warning", "*"));
+		if (status.staged) markers.push(theme.fg("success", "+"));
+		if (status.ahead) markers.push(theme.fg("dim", `⇡${status.ahead}`));
+		if (status.behind) markers.push(theme.fg("dim", `⇣${status.behind}`));
+	}
+
+	const suffix = markers.length ? ` ${markers.join("")}` : "";
+	return theme.fg(branchColor, `⎇ ${branch}`) + suffix;
+}
+
 function pathLine(ctx: ExtensionContext, theme: Theme, footerData: ReadonlyFooterDataProvider): string {
 	const parts: string[] = [styledPath(ctx.sessionManager.getCwd(), theme)];
-	const branch = footerData.getGitBranch();
-	if (branch) {
-		const branchColor = branch === "detached" ? "warning" : "accent";
-		parts.push(theme.fg(branchColor, `⎇ ${branch}`));
-	}
+	const git = gitSegment(ctx.sessionManager.getCwd(), footerData, theme);
+	if (git) parts.push(git);
 	const name = ctx.sessionManager.getSessionName();
 	if (name) parts.push(theme.fg("muted", name));
 	return parts.join(divider(theme));
@@ -211,8 +233,10 @@ export function renderPolishedFooter(
 
 	if (variant === "compact") {
 		const left = [tokens, context].filter(Boolean).join(divider(theme));
-		const path = styledPath(ctx.sessionManager.getCwd(), theme);
-		const mid = path + divider(theme) + left;
+		const pathParts = [styledPath(ctx.sessionManager.getCwd(), theme)];
+		const git = gitSegment(ctx.sessionManager.getCwd(), footerData, theme);
+		if (git) pathParts.push(git);
+		const mid = pathParts.join(divider(theme)) + divider(theme) + left;
 		const row = align(mid, model, width, ellipsis);
 		return extLine ? [row, extLine] : [row];
 	}

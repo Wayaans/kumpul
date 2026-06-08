@@ -40,9 +40,9 @@ Use Task tool with `general-purpose` type, fill template at `code-reviewer.md`
 - `{HEAD_SHA}` - Ending commit
 
 **3. Act on feedback:**
-- Fix Critical issues immediately
-- Fix Important issues before proceeding
-- Note Minor issues for later
+- The reviewer should return **all** findings in one pass (Critical, Important, Minor) — not one issue per round
+- Fix every Critical and Important issue from that report before requesting another review
+- Note Minor issues for later (or fix if quick)
 - Push back if reviewer is wrong (with reasoning)
 
 ## Example
@@ -94,6 +94,7 @@ You: [Fix progress indicators]
 - Ignore Critical issues
 - Proceed with unfixed Important issues
 - Argue with valid technical feedback
+- Return only one issue per review when more exist (enumerate all findings in one pass)
 
 **If reviewer wrong:**
 - Push back with technical reasoning

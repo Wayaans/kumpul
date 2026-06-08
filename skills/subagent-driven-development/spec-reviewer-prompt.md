@@ -55,7 +55,24 @@ Task tool (general-purpose):
 
     **Verify by reading code, not by trusting report.**
 
+    ## Report once, completely
+
+    Finish a **full** pass over the implementation before you respond. Collect every
+    spec gap, extra feature, and misunderstanding — then report them **all in one review**.
+
+    **DO NOT** stop after the first issue. Drip-feeding one finding per round forces
+    wasteful fix-review cycles. The implementer needs the complete picture to fix
+    everything in one iteration.
+
+    When issues exist, list **every** item (not just the most severe):
+    - Missing requirements (each with file:line)
+    - Extra/unrequested work (each with file:line)
+    - Misunderstandings or wrong interpretations (each with file:line)
+
     Report:
     - ✅ Spec compliant (if everything matches after code inspection)
-    - ❌ Issues found: [list specifically what's missing or extra, with file:line references]
+    - ❌ Issues found:
+      - [issue 1 — what's wrong, file:line]
+      - [issue 2 — ...]
+      - ... (all issues in this single response)
 ```

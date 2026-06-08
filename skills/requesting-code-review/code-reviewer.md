@@ -104,9 +104,19 @@ Task tool (general-purpose):
 
     **Reasoning:** [1-2 sentence technical assessment]
 
+    ## Report once, completely
+
+    Read the full diff and requirements before you respond. Collect **every** issue
+    you find, then return them all in a single review (Strengths + Issues + Assessment).
+
+    **DO NOT** report only one issue and stop. Drip-feeding findings one per round
+    wastes fix-review cycles. The implementer should be able to address everything
+    you flagged in one pass.
+
     ## Critical Rules
 
     **DO:**
+    - Complete a full review pass, then list all findings at once
     - Categorize by actual severity
     - Be specific (file:line, not vague)
     - Explain WHY each issue matters
@@ -114,6 +124,7 @@ Task tool (general-purpose):
     - Give a clear verdict
 
     **DON'T:**
+    - Return after finding only one issue (enumerate all issues in one response)
     - Say "looks good" without checking
     - Mark nitpicks as Critical
     - Give feedback on code you didn't actually read

@@ -6,11 +6,11 @@ Redesigns the pi footer to a Codex CLI–style status bar using active theme col
 
 On session start, replaces the built-in footer with a themed layout:
 
-- **codex** (default): path · branch · session on line 1; tokens │ context bar │ model on line 2
-- **compact**: single line with path, tokens, context bar, and model
+- **codex** (default): path │ branch status · session on line 1; tokens │ context bar │ model on line 2
+- **compact**: single line with path, branch status, tokens, context bar, and model
 - **minimal**: context bar and model only
 
-Context usage renders as a `█░` bar colored with `success` / `warning` / `error` from the theme. Path basename uses `text`, parent segments `dim`. Branch uses `accent` (or `warning` when detached). Model id uses `accent`; thinking level uses theme `thinking*` tokens when the model supports reasoning.
+Context usage renders as a `█░` bar colored with `success` / `warning` / `error` from the theme. Path basename uses `text`, parent segments `dim`. When `git` is installed and cwd is in a repo, branch status appears immediately right of the path: `⎇ branch` in `accent` (`warning` when detached), `*` unstaged (`warning`), `+` staged (`success`), `⇡N` / `⇣N` ahead/behind (`dim`). Model id uses `accent`; thinking level uses theme `thinking*` tokens when the model supports reasoning.
 
 Extension statuses from `ctx.ui.setStatus()` appear on an extra dim line when present, except **codex-usage** (`◷ NN%`), which is shown on the model line immediately left of the provider prefix.
 
