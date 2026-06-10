@@ -9,6 +9,7 @@ import {
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig, AgentProgress, AgentResult } from "./types.ts";
+import { displayAgentName } from "./types.ts";
 import { MAX_TOOLS_COLLAPSED } from "./types.ts";
 import {
 	parseCursorThinkingActivity,
@@ -85,10 +86,11 @@ export function extractToolArgsPreview(args: Record<string, unknown>): string {
 	if (args.query) return `"${cap(flatten(String(args.query)))}"`;
 	if (args.url) return cap(flatten(String(args.url)));
 	if (args.pattern) return cap(flatten(String(args.pattern)));
+	if (args.alias) return flatten(String(args.alias));
 	if (args.agent) return flatten(String(args.agent));
 	if (Array.isArray(args.tasks)) {
-		const names = (args.tasks as Array<{ agent?: string }>)
-			.map((t) => t?.agent || "?")
+		const names = (args.tasks as Array<{ agent?: string; alias?: string }>)
+			.map((t) => t?.alias ?? t?.agent ?? "?")
 			.join(", ");
 		return `parallel(${names})`;
 	}
@@ -205,7 +207,7 @@ export function progressSignature(p: AgentProgress): string {
 				t.children
 					?.map(
 						(c) =>
-							`${c.agent}:${c.progress.status}:${c.progress.toolCount}:${c.progress.recentTools.length}`,
+							`${displayAgentName(c)}:${c.progress.status}:${c.progress.toolCount}:${c.progress.recentTools.length}`,
 					)
 					.join(";") ?? "";
 			return `${t.toolCallId}|${t.status}|${t.tool}|${t.args.slice(0, 80)}|${childSig}`;
@@ -243,6 +245,10 @@ function throttle<T extends (...args: unknown[]) => void>(fn: T, ms: number): T 
 	}) as T;
 }
 
+export interface RunSubagentOptions {
+	alias?: string;
+}
+
 export async function runSubagent(
 	agent: AgentConfig,
 	task: string,
@@ -250,13 +256,16 @@ export async function runSubagent(
 	signal: AbortSignal | undefined,
 	onUpdate?: (progress: AgentProgress, usage: AgentResult["usage"]) => void,
 	toolExtensionPaths: ToolExtensionPaths = new Map(),
+	options: RunSubagentOptions = {},
 ): Promise<AgentResult> {
+	const { alias } = options;
 	const { args, tempDir, childEnv } = await buildPiArgs(agent, task, toolExtensionPaths);
 	const command = args[0];
 	const spawnArgs = args.slice(1);
 
 	const result: AgentResult = {
 		agent: agent.name,
+		alias,
 		task,
 		output: "",
 		exitCode: 0,
@@ -264,6 +273,7 @@ export async function runSubagent(
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 		progress: {
 			agent: agent.name,
+			alias,
 			status: "running",
 			task,
 			recentTools: [],
@@ -539,7 +549,7 @@ export async function runSubagent(
 
 export function formatSubagentFailure(result: AgentResult): string {
 	const parts = [
-		`Subagent ${result.agent} failed with exit code ${result.exitCode}`,
+		`Subagent ${displayAgentName(result)} failed with exit code ${result.exitCode}`,
 		result.progress.error ? `error: ${result.progress.error}` : undefined,
 		result.spawnError ? `spawn: ${result.spawnError}` : undefined,
 		result.stderr ? `stderr: ${result.stderr}` : undefined,

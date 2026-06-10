@@ -24,8 +24,15 @@ export interface ToolEvent {
 	children?: AgentResult[];
 }
 
+/** Display label for a subagent run; falls back to registry `agent` name. */
+export function displayAgentName(r: { agent: string; alias?: string }): string {
+	return r.alias ?? r.agent;
+}
+
 export interface AgentProgress {
 	agent: string;
+	/** Optional display label; registry name stays in `agent`. */
+	alias?: string;
 	status: "pending" | "running" | "completed" | "failed";
 	task: string;
 	recentTools: ToolEvent[];
@@ -38,6 +45,8 @@ export interface AgentProgress {
 
 export interface AgentResult {
 	agent: string;
+	/** Optional display label; registry name stays in `agent`. */
+	alias?: string;
 	task: string;
 	output: string;
 	exitCode: number;

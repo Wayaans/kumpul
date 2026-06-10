@@ -15,6 +15,18 @@ Isolated child `pi` processes with live TUI progress (tool log, nested children,
 { "agent": "reviewer", "task": "Review extensions/subagents/index.ts for edge cases" }
 ```
 
+Optional `alias` labels a run in the TUI without changing which agent config runs (tools, model, system prompt). Use it when reusing the blank **agent** shell with a task-specific prompt instead of an opinionated built-in like **reviewer**:
+
+```json
+{
+  "agent": "agent",
+  "alias": "spec-reviewer",
+  "task": "Review whether the implementation matches the spec. Do not trust the implementer's report..."
+}
+```
+
+`agent` still resolves the registry entry and spawn allowlist; `alias` is display-only (progress rows, tool call header, nested children, errors). Omit `alias` to show the real agent name.
+
 Fan out with multiple `subagent` calls in one turn. Concurrency cap: `config.json` → `maxConcurrency` (default 4, must be >= 1). Nested subagents are capped by `PI_SUBAGENT_DEPTH` (max 2).
 
 ## Custom agents

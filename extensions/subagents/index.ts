@@ -21,6 +21,18 @@ import type { AgentResult, ExtensionConfig, SubagentDetails } from "./types.ts";
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
 const CONFIG_PATH = path.join(EXTENSION_DIR, "config.json");
 const DEFAULT_MAX_CONCURRENCY = 4;
+const MAX_ALIAS_LENGTH = 64;
+
+export function normalizeSubagentAlias(raw: unknown): string | undefined {
+	if (raw === undefined || raw === null) return undefined;
+	if (typeof raw !== "string") throw new Error("subagent alias must be a string");
+	const trimmed = raw.trim();
+	if (!trimmed) throw new Error("subagent alias must not be empty");
+	if (trimmed.length > MAX_ALIAS_LENGTH) {
+		throw new Error(`subagent alias must be at most ${MAX_ALIAS_LENGTH} characters`);
+	}
+	return trimmed;
+}
 
 export function parseConfig(raw: unknown): ExtensionConfig {
 	if (!raw || typeof raw !== "object") return {};
@@ -84,12 +96,19 @@ export default function (pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"Parallel tool calls are your primary parallelism mechanism — put multiple independent read/fetch/search calls in one function_calls block. Don't use subagents to parallelize simple I/O.",
 			"Use subagent to delegate reasoning: **agent** as the general subagent for any delegated task, **reviewer** for read-only code review",
+			"Use optional `alias` to label what a subagent is doing (e.g. `{ \"agent\": \"agent\", \"alias\": \"spec-reviewer\", \"task\": \"...\" }`) when reusing the blank `agent` shell with a task-specific prompt instead of the opinionated `reviewer` agent",
 			"For multiple independent subagent tasks, emit multiple `subagent` tool calls in the same turn — they run in parallel automatically.",
 			"Subagents have NO context from the current conversation — include ALL necessary context in the task description",
 		],
 		parameters: Type.Object({
 			agent: Type.String({ description: "Name of the agent to invoke" }),
 			task: Type.String({ description: "Task description" }),
+			alias: Type.Optional(
+				Type.String({
+					description:
+						"Optional display label for this run (e.g. spec-reviewer). Does not change which agent config runs.",
+				}),
+			),
 			cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
 		}),
 
@@ -121,12 +140,15 @@ export default function (pi: ExtensionAPI): void {
 				throw new Error(`Unknown or disabled agent: ${params.agent}. Available agents: ${available}`);
 			}
 
+			const alias = normalizeSubagentAlias(params.alias);
+
 			const [provider, modelId] = (agent.model || "").split("/");
 			const contextWindow =
 				provider && modelId ? ctx.modelRegistry.find(provider, modelId)?.contextWindow : undefined;
 
 			const liveResult: AgentResult = {
 				agent: params.agent,
+				alias,
 				task: params.task,
 				output: "",
 				exitCode: -1,
@@ -135,6 +157,7 @@ export default function (pi: ExtensionAPI): void {
 				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 				progress: {
 					agent: params.agent,
+					alias,
 					status: "running",
 					task: params.task,
 					recentTools: [],
@@ -175,6 +198,7 @@ export default function (pi: ExtensionAPI): void {
 						});
 					},
 					toolExtensionPaths,
+					{ alias },
 				),
 			);
 

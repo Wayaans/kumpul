@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import answerExtension from "../answer/index.ts";
 import findDocsExtension from "../find-docs/index.ts";
 import polishStatuslineExtension from "../polish-statusline/index.ts";
 import codexUsageExtension from "../codex-usage/index.ts";
 import gitGuardrailsExtension from "../git-guardrails/index.ts";
 import handoffExtension from "../handoff/index.ts";
 import opencodeGoFixExtension from "../opencode-go-fix/index.ts";
+import todosExtension from "../todos/index.ts";
 
 function createMockPi(): ExtensionAPI {
 	const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
@@ -23,8 +25,9 @@ function createMockPi(): ExtensionAPI {
 		},
 		registerMessageRenderer(_customType: string, _renderer: unknown) {},
 		registerTool(tool: { name: string }) {
-			assert.equal(tool.name, "find_docs");
+			assert.ok(tool.name.length > 0);
 		},
+		registerShortcut(_keys: string, _options: { handler: unknown }) {},
 		getActiveTools() {
 			return ["bash", "read", "find_docs"];
 		},
@@ -49,4 +52,6 @@ test("migrated extensions register without throwing", () => {
 	assert.doesNotThrow(() => findDocsExtension(pi));
 	assert.doesNotThrow(() => polishStatuslineExtension(pi));
 	assert.doesNotThrow(() => codexUsageExtension(pi));
+	assert.doesNotThrow(() => todosExtension(pi));
+	assert.doesNotThrow(() => answerExtension(pi));
 });

@@ -2,7 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentResult, ToolEvent } from "./types.ts";
-import { MAX_TOOLS_COLLAPSED } from "./types.ts";
+import { displayAgentName, MAX_TOOLS_COLLAPSED } from "./types.ts";
 import {
 	formatContextUsage,
 	formatDuration,
@@ -85,7 +85,7 @@ export function renderAgentProgress(
 	const stats = `${prog.toolCount} tools · ${formatDuration(prog.durationMs)}`;
 	const modelStr = r.model ? theme.fg("dim", ` (${r.model})`) : "";
 	addLine(
-		`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${modelStr} — ${theme.fg("dim", stats)}`,
+		`${icon} ${theme.fg("toolTitle", theme.bold(displayAgentName(r)))}${modelStr} — ${theme.fg("dim", stats)}`,
 	);
 
 	const renderToolRow = (
@@ -161,19 +161,20 @@ export function renderAgentProgress(
 }
 
 export function renderSubagentCall(
-	args: { agent?: string; task?: string; cwd?: string },
+	args: { agent?: string; alias?: string; task?: string; cwd?: string },
 	theme: Theme,
 	context: { expanded: boolean; lastComponent?: unknown },
 ) {
+	const label = args.agent ? displayAgentName({ agent: args.agent, alias: args.alias }) : undefined;
 	if (!context.expanded) {
-		if (!args.agent) {
+		if (!label) {
 			return new Text(theme.fg("toolTitle", theme.bold("subagent")), 0, 0);
 		}
 		const taskPreview = args.task
 			? (args.task.length > 60 ? args.task.slice(0, 60) + "…" : args.task).replace(/\n/g, " ")
 			: "";
 		return new Text(
-			`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", args.agent)} ${theme.fg("dim", taskPreview)}`,
+			`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", label)} ${theme.fg("dim", taskPreview)}`,
 			0,
 			0,
 		);
@@ -183,7 +184,7 @@ export function renderSubagentCall(
 		context.lastComponent instanceof Container
 			? (context.lastComponent.clear(), context.lastComponent)
 			: new Container();
-	const agentLabel = args.agent ? ` ${theme.fg("accent", args.agent)}` : "";
+	const agentLabel = label ? ` ${theme.fg("accent", label)}` : "";
 	const cwdLabel = args.cwd ? theme.fg("dim", ` (cwd: ${args.cwd})`) : "";
 	c.addChild(new Text(`${theme.fg("toolTitle", theme.bold("subagent"))}${agentLabel}${cwdLabel}`, 0, 0));
 	if (args.task) {

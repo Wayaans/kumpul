@@ -17,16 +17,16 @@ import {
 	resolveCustomToolExtension,
 } from "../subagents/resolve-tools.ts";
 import { parseCursorThinkingActivity } from "../subagents/cursor-progress.ts";
-import { buildPiArgs, MAX_SUBAGENT_DEPTH, progressSignature } from "../subagents/spawn.ts";
-import { toolsToShow } from "../subagents/render.ts";
-import { MAX_TOOLS_COLLAPSED } from "../subagents/types.ts";
+import { buildPiArgs, extractToolArgsPreview, formatSubagentFailure, MAX_SUBAGENT_DEPTH, progressSignature } from "../subagents/spawn.ts";
+import { renderSubagentCall, toolsToShow } from "../subagents/render.ts";
+import { displayAgentName, MAX_TOOLS_COLLAPSED } from "../subagents/types.ts";
 import { isDangerousBashCommand } from "../subagents/tools/safe-bash.ts";
 import { writeAgentConfig } from "../subagents/agent-io.ts";
 import {
 	loadMergedSubagentsUiConfig,
 	updateProjectSubagentsUiConfig,
 } from "../subagents/config-io.ts";
-import subagentsExtension, { parseConfig, registerAgent, unregisterAgent } from "../subagents/index.ts";
+import subagentsExtension, { normalizeSubagentAlias, parseConfig, registerAgent, unregisterAgent } from "../subagents/index.ts";
 import type { AgentConfig, AgentProgress } from "../subagents/types.ts";
 
 function tempDir(prefix: string): string {
@@ -142,6 +142,74 @@ test("progressSignature changes on tool and nested updates", () => {
 	const sig4 = progressSignature(base);
 	base.recentTools[0]!.args = "b.ts";
 	assert.notEqual(progressSignature(base), sig4);
+});
+
+test("displayAgentName prefers alias over registry agent name", () => {
+	assert.equal(displayAgentName({ agent: "agent", alias: "spec-reviewer" }), "spec-reviewer");
+	assert.equal(displayAgentName({ agent: "agent" }), "agent");
+});
+
+test("normalizeSubagentAlias trims and rejects invalid values", () => {
+	assert.equal(normalizeSubagentAlias("  spec-reviewer  "), "spec-reviewer");
+	assert.equal(normalizeSubagentAlias(undefined), undefined);
+	assert.throws(() => normalizeSubagentAlias(""), /must not be empty/);
+	assert.throws(() => normalizeSubagentAlias("   "), /must not be empty/);
+	assert.throws(() => normalizeSubagentAlias(1), /must be a string/);
+	assert.throws(() => normalizeSubagentAlias("x".repeat(65)), /at most 64/);
+});
+
+test("extractToolArgsPreview prefers alias for subagent calls", () => {
+	assert.equal(
+		extractToolArgsPreview({ agent: "agent", alias: "spec-reviewer", task: "review spec" }),
+		"spec-reviewer",
+	);
+	assert.equal(
+		extractToolArgsPreview({
+			tasks: [
+				{ agent: "agent", alias: "spec-reviewer" },
+				{ agent: "agent", alias: "code-quality-reviewer" },
+			],
+		}),
+		"parallel(spec-reviewer, code-quality-reviewer)",
+	);
+});
+
+test("formatSubagentFailure uses alias in error message", () => {
+	const message = formatSubagentFailure({
+		agent: "agent",
+		alias: "spec-reviewer",
+		task: "task",
+		output: "",
+		exitCode: 1,
+		progress: {
+			agent: "agent",
+			alias: "spec-reviewer",
+			status: "failed",
+			task: "task",
+			recentTools: [],
+			toolCount: 0,
+			tokens: 0,
+			durationMs: 0,
+			lastMessage: "",
+			error: "boom",
+		},
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+	});
+	assert.match(message, /Subagent spec-reviewer failed/);
+});
+
+test("renderSubagentCall shows alias in collapsed header", () => {
+	const theme = {
+		fg: (_: string, text: string) => text,
+		bold: (text: string) => text,
+	};
+	const rendered = renderSubagentCall(
+		{ agent: "agent", alias: "spec-reviewer", task: "Review spec compliance" },
+		theme as never,
+		{ expanded: false },
+	);
+	assert.match(String((rendered as { text?: string }).text ?? rendered), /spec-reviewer/);
+	assert.doesNotMatch(String((rendered as { text?: string }).text ?? rendered), /\bagent\b/);
 });
 
 test("resolveCustomToolExtension finds kumpul tools", () => {
