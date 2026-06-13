@@ -27,6 +27,8 @@ export const MAX_SUBAGENT_DEPTH = 2;
 
 /** Parent TUI heartbeat while a child pi subagent runs (avoid <1s full re-renders — flicker). */
 const SUBAGENT_PROGRESS_HEARTBEAT_MS = 1000;
+/** After JSON `agent_end`, give provider/session cleanup a brief chance to exit naturally. */
+const SUBAGENT_AGENT_END_GRACE_MS = 100;
 
 export function resolvePiBinary(): { command: string; baseArgs: string[] } {
 	const entry = process.argv[1];
@@ -334,6 +336,25 @@ export async function runSubagent(
 		});
 
 		let buf = "";
+		let settled = false;
+		let abortListener: (() => void) | undefined;
+
+		const finish = (code: number) => {
+			if (settled) return;
+			settled = true;
+			if (heartbeat) clearInterval(heartbeat);
+			if (abortListener) signal?.removeEventListener("abort", abortListener);
+			resolve(code);
+		};
+
+		const terminateAfterAgentEnd = () => {
+			const termTimer = setTimeout(() => {
+				if (!proc.killed) proc.kill("SIGTERM");
+				const killTimer = setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 3000);
+				killTimer.unref?.();
+			}, SUBAGENT_AGENT_END_GRACE_MS);
+			termTimer.unref?.();
+		};
 
 		const processLine = (line: string) => {
 			if (!line.trim()) return;
@@ -426,6 +447,13 @@ export async function runSubagent(
 					}
 				}
 
+				if (evt.type === "agent_end") {
+					fireUpdate(true);
+					finish(0);
+					terminateAfterAgentEnd();
+					return;
+				}
+
 				if (evt.type === "message_end" && evt.message) {
 					const message = evt.message as {
 						role?: string;
@@ -497,19 +525,18 @@ export async function runSubagent(
 		});
 
 		proc.on("close", (code) => {
-			if (heartbeat) clearInterval(heartbeat);
 			if (buf.trim()) processLine(buf);
+			if (settled) return;
 			if (code !== 0 && stderrBuf.trim() && !progress.error) {
 				progress.error = stderrBuf.trim();
 			}
-			resolve(code ?? 1);
+			finish(code ?? 1);
 		});
 
 		proc.on("error", (error) => {
-			if (heartbeat) clearInterval(heartbeat);
 			spawnErrorMsg = error.message;
 			if (!progress.error) progress.error = `Failed to spawn pi: ${error.message}`;
-			resolve(1);
+			finish(1);
 		});
 
 		if (signal) {
@@ -517,6 +544,7 @@ export async function runSubagent(
 				proc.kill("SIGTERM");
 				setTimeout(() => !proc.killed && proc.kill("SIGKILL"), 3000);
 			};
+			abortListener = kill;
 			if (signal.aborted) kill();
 			else signal.addEventListener("abort", kill, { once: true });
 		}

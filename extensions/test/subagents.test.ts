@@ -17,7 +17,7 @@ import {
 	resolveCustomToolExtension,
 } from "../subagents/resolve-tools.ts";
 import { parseCursorThinkingActivity } from "../subagents/cursor-progress.ts";
-import { buildPiArgs, extractToolArgsPreview, formatSubagentFailure, MAX_SUBAGENT_DEPTH, progressSignature } from "../subagents/spawn.ts";
+import { buildPiArgs, extractToolArgsPreview, formatSubagentFailure, MAX_SUBAGENT_DEPTH, progressSignature, runSubagent } from "../subagents/spawn.ts";
 import { renderSubagentCall, toolsToShow } from "../subagents/render.ts";
 import { displayAgentName, MAX_TOOLS_COLLAPSED } from "../subagents/types.ts";
 import { isDangerousBashCommand } from "../subagents/tools/safe-bash.ts";
@@ -512,6 +512,45 @@ test("subagents extension registers without throwing", () => {
 
 	assert.doesNotThrow(() => subagentsExtension(pi));
 });
+
+test("runSubagent resolves on agent_end even when child process stays alive", async () => withoutSubagentAllowlistAsync(async () => {
+	const binDir = tempDir("kumpul-subagents-bin-");
+	const fakePi = path.join(binDir, "pi");
+	fs.writeFileSync(
+		fakePi,
+		`#!/usr/bin/env node
+console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "final summary" }] } }));
+console.log(JSON.stringify({ type: "agent_end", messages: [] }));
+setInterval(() => {}, 1000);
+`,
+		{ encoding: "utf-8", mode: 0o700 },
+	);
+
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${binDir}${path.delimiter}${previousPath ?? ""}`;
+	const abort = new AbortController();
+	const run = runSubagent(testAgent({ name: "agent-end", tools: [] }), "finish", process.cwd(), abort.signal);
+	let timedOut = false;
+	let timeout: ReturnType<typeof setTimeout> | undefined;
+	try {
+		const timeoutResult = new Promise<undefined>((resolve) => {
+			timeout = setTimeout(() => {
+				timedOut = true;
+				abort.abort();
+				resolve(undefined);
+			}, 2000);
+		});
+		const result = await Promise.race([run, timeoutResult]);
+		if (timedOut || !result) assert.fail("subagent did not resolve after agent_end");
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.progress.status, "completed");
+		assert.equal(result.output, "final summary");
+	} finally {
+		if (timeout) clearTimeout(timeout);
+		if (timedOut) await run.catch(() => undefined);
+		process.env.PATH = previousPath;
+	}
+}));
 
 test("execute throws when subagent process fails", async () => withoutSubagentAllowlistAsync(async () => {
 	const binDir = tempDir("kumpul-subagents-bin-");
