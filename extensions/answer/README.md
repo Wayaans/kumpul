@@ -28,7 +28,7 @@ Extract questions from the last assistant message and answer them in an interact
 | 3        | `anthropic`     | `claude-haiku-4-5`  |
 | 4        | *(session)*     | your current model  |
 
-The loader shows which model ran extraction, e.g. `Extracting questions using gpt-5.3-codex...`.
+`/answer` tries the preferred models in order and falls back on errors in that order, before using your session model.
 
 ## Troubleshooting
 

@@ -35,6 +35,25 @@ interface ExtractionResult {
 	questions: ExtractedQuestion[];
 }
 
+const BOX_WIDTH_MAX = 120;
+const BOX_WIDTH_MIN = 24;
+const JSON_CODE_BLOCK_RE = /```(?:json)?\s*([\s\S]*?)```/i;
+
+const TRANSIENT_EXTRACTION_ERROR_PATTERNS = [
+	"rate limit",
+	"too many requests",
+	"temporarily",
+	"timeout",
+	"timed out",
+	"service unavailable",
+	"unavailable",
+	"overloaded",
+	"internal error",
+	"internal server",
+	"network",
+	"connection",
+]
+
 const SYSTEM_PROMPT = `You are a question extractor. Given text from a conversation, extract any questions that need answering.
 
 Output a JSON object with this structure:
@@ -78,7 +97,7 @@ function modelKey(model: Model<Api>): string {
 	return `${model.provider}/${model.id}`;
 }
 
-function isAuthRelatedExtractionError(message: string): boolean {
+export function isAuthRelatedExtractionError(message: string): boolean {
 	const lower = message.toLowerCase();
 	return (
 		lower.includes("no api key") ||
@@ -86,6 +105,12 @@ function isAuthRelatedExtractionError(message: string): boolean {
 		lower.includes("not authenticated") ||
 		lower.includes("authentication")
 	);
+}
+
+export function isRecoverableExtractionError(message: string): boolean {
+	if (isAuthRelatedExtractionError(message)) return true;
+	const lower = message.toLowerCase();
+	return TRANSIENT_EXTRACTION_ERROR_PATTERNS.some((pattern) => lower.includes(pattern));
 }
 
 /**
@@ -132,25 +157,96 @@ async function getExtractionModelCandidates(
 	return candidates;
 }
 
+function extractFirstJsonObject(text: string): string | undefined {
+	const match = text.match(JSON_CODE_BLOCK_RE);
+	if (match) {
+		return match[1].trim();
+	}
+
+	const start = text.indexOf("{");
+	if (start === -1) return undefined;
+
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	let jsonStart = start;
+
+	for (let i = start; i < text.length; i++) {
+		const char = text[i];
+
+		if (escaped) {
+			escaped = false;
+			continue;
+		}
+
+		if (char === "\\") {
+			escaped = true;
+			continue;
+		}
+
+		if (char === '"') {
+			inString = !inString;
+			continue;
+		}
+
+		if (inString) continue;
+
+		if (char === "{") {
+			depth++;
+		} else if (char === "}") {
+			depth--;
+			if (depth === 0) {
+				return text.slice(jsonStart, i + 1).trim();
+			}
+		}
+	}
+
+	return undefined;
+}
+
+function parseExtractionQuestions(value: unknown): ExtractedQuestion[] {
+	if (!Array.isArray(value)) return [];
+
+	const questions: ExtractedQuestion[] = [];
+
+	for (const raw of value) {
+		if (!raw || typeof raw !== "object") continue;
+		const item = raw as Record<string, unknown>;
+
+		const question =
+			typeof item.question === "string" ? item.question.trim() : "";
+		if (!question) continue;
+
+		const entry: ExtractedQuestion = { question };
+
+		if (typeof item.context === "string") {
+			const context = item.context.trim();
+			if (context) {
+				entry.context = context;
+			}
+		}
+
+		questions.push(entry);
+	}
+
+	return questions;
+}
+
 /**
  * Parse the JSON response from the LLM
  */
-function parseExtractionResult(text: string): ExtractionResult | null {
+export function parseExtractionResult(text: string): ExtractionResult | null {
 	try {
-		// Try to find JSON in the response (it might be wrapped in markdown code blocks)
-		let jsonStr = text;
-
-		// Remove markdown code block if present
-		const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-		if (jsonMatch) {
-			jsonStr = jsonMatch[1].trim();
-		}
+		const jsonStr = extractFirstJsonObject(text);
+		if (!jsonStr) return null;
 
 		const parsed = JSON.parse(jsonStr);
-		if (parsed && Array.isArray(parsed.questions)) {
-			return parsed as ExtractionResult;
-		}
-		return null;
+		if (!parsed || typeof parsed !== "object") return null;
+		if (!Array.isArray((parsed as { questions?: unknown }).questions)) return null;
+
+		return {
+			questions: parseExtractionQuestions((parsed as { questions: unknown }).questions),
+		};
 	} catch {
 		return null;
 	}
@@ -210,11 +306,6 @@ class QnAComponent implements Component {
 			this.invalidate();
 			this.tui.requestRender();
 		};
-	}
-
-	private allQuestionsAnswered(): boolean {
-		this.saveCurrentAnswer();
-		return this.answers.every((a) => (a?.trim() || "").length > 0);
 	}
 
 	private saveCurrentAnswer(): void {
@@ -340,7 +431,8 @@ class QnAComponent implements Component {
 		}
 
 		const lines: string[] = [];
-		const boxWidth = Math.min(width - 4, 120); // Allow wider box
+		const constrainedWidth = Math.max(BOX_WIDTH_MIN, width - 4);
+		const boxWidth = Math.min(constrainedWidth, BOX_WIDTH_MAX); // Allow wider box
 		const contentWidth = boxWidth - 4; // 2 chars padding on each side
 
 		// Helper to create horizontal lines (dim the whole thing at once)
@@ -408,7 +500,7 @@ class QnAComponent implements Component {
 		// Render the editor component (multi-line input) with padding
 		// Skip the first and last lines (editor's own border lines)
 		const answerPrefix = this.bold("A: ");
-		const editorWidth = contentWidth - 4 - 3; // Extra padding + space for "A: "
+		const editorWidth = Math.max(1, contentWidth - 4 - 3); // Extra padding + space for "A: "
 		const editorLines = this.editor.render(editorWidth);
 		for (let i = 1; i < editorLines.length - 1; i++) {
 			if (i === 1) {
@@ -494,23 +586,23 @@ export default function (pi: ExtensionAPI) {
 				const doExtract = async () => {
 					const candidates = await getExtractionModelCandidates(sessionModel, ctx.modelRegistry);
 					let lastError: Error | undefined;
+					const userMessage: UserMessage = {
+						role: "user",
+						content: [{ type: "text", text: lastAssistantText! }],
+						timestamp: Date.now(),
+					};
 
 					for (let i = 0; i < candidates.length; i++) {
 						const model = candidates[i];
+						const modelLabel = `${model.provider}/${model.id}`;
 						const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 						if (!auth.ok) {
-							lastError = new Error(auth.error);
-							if (i < candidates.length - 1 && isAuthRelatedExtractionError(auth.error)) {
+							lastError = new Error(`${modelLabel} auth failed: ${auth.error}`);
+							if (i < candidates.length - 1 && isRecoverableExtractionError(auth.error)) {
 								continue;
 							}
 							throw lastError;
 						}
-
-						const userMessage: UserMessage = {
-							role: "user",
-							content: [{ type: "text", text: lastAssistantText! }],
-							timestamp: Date.now(),
-						};
 
 						const response = await complete(
 							model,
@@ -524,8 +616,8 @@ export default function (pi: ExtensionAPI) {
 						}
 						if (response.stopReason === "error") {
 							const message = response.errorMessage ?? "Question extraction failed";
-							lastError = new Error(message);
-							if (i < candidates.length - 1 && isAuthRelatedExtractionError(message)) {
+							lastError = new Error(`${modelLabel} failed: ${message}`);
+							if (i < candidates.length - 1 && isRecoverableExtractionError(message)) {
 								continue;
 							}
 							throw lastError;
@@ -538,7 +630,11 @@ export default function (pi: ExtensionAPI) {
 
 						const parsed = parseExtractionResult(responseText);
 						if (!parsed) {
-							throw new Error("Could not parse questions from extraction model output");
+							lastError = new Error(`${modelLabel} returned unparsable JSON`);
+							if (i < candidates.length - 1) {
+								continue;
+							}
+							throw lastError;
 						}
 						return parsed;
 					}

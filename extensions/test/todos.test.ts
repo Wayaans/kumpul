@@ -7,6 +7,7 @@ import {
 	LEGACY_TODO_DIR_NAME,
 	TODO_DIR_NAME,
 	migrateLegacyTodosDir,
+	parseTodosCommandArgs,
 } from "../todos/index.ts";
 
 async function withTempDir(run: (dir: string) => Promise<void>): Promise<void> {
@@ -72,5 +73,38 @@ test("migrateLegacyTodosDir does not overwrite existing destination files", asyn
 
 		assert.equal(await fs.readFile(path.join(todosDir, "abc12345.md"), "utf8"), "current");
 		assert.equal(await fs.readFile(path.join(legacyDir, "abc12345.md"), "utf8"), "legacy");
+	});
+});
+
+test("parseTodosCommandArgs routes bare /todos to menu mode", () => {
+	assert.deepEqual(parseTodosCommandArgs(undefined), { mode: "menu" });
+	assert.deepEqual(parseTodosCommandArgs(""), { mode: "menu" });
+	assert.deepEqual(parseTodosCommandArgs("   "), { mode: "menu" });
+});
+
+test("parseTodosCommandArgs treats free text as create title", () => {
+	assert.deepEqual(parseTodosCommandArgs("update user crud with filter"), {
+		mode: "create",
+		title: "update user crud with filter",
+	});
+});
+
+test("parseTodosCommandArgs supports explicit subcommands", () => {
+	assert.deepEqual(parseTodosCommandArgs("browse auth"), {
+		mode: "browse",
+		searchQuery: "auth",
+	});
+	assert.deepEqual(parseTodosCommandArgs("create fix login"), {
+		mode: "create",
+		title: "fix login",
+	});
+	assert.deepEqual(parseTodosCommandArgs("BROWSE"), { mode: "browse", searchQuery: undefined });
+	assert.deepEqual(parseTodosCommandArgs("CREATE"), { mode: "create", title: undefined });
+});
+
+test("parseTodosCommandArgs treats plan as create title", () => {
+	assert.deepEqual(parseTodosCommandArgs("plan docs/scratchpads/foo.md"), {
+		mode: "create",
+		title: "plan docs/scratchpads/foo.md",
 	});
 });

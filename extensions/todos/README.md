@@ -16,4 +16,7 @@ File-backed todo manager with agent tool and interactive TUI.
 
 ## Commands
 
-- **/todos** — interactive todo browser (search, work, refine, close, delete)
+- **/todos** — choose browse or create
+- **/todos browse** `[query]` — interactive todo browser (search, work, refine, close, delete)
+- **/todos create** `[title]` — create form (title + body; prefills title when provided), then opens browse
+- **/todos** `<title>` — shorthand for create (e.g. `/todos update user crud with filter`)
