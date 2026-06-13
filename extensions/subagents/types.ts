@@ -14,6 +14,10 @@ export interface AgentConfig {
 	source: AgentSource;
 	/** When `subagent` is in tools, restrict spawn targets (enforced via PI_SUBAGENT_ALLOWED). */
 	subagentAgents?: string[];
+	/** Extra named extensions to load explicitly while extension discovery stays disabled. */
+	extensions?: string[];
+	/** Named skills to load explicitly while skill discovery stays disabled. */
+	skills?: string[];
 }
 
 export interface ToolEvent {

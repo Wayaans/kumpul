@@ -13,7 +13,7 @@ function formatList(values: string[]): string {
 }
 
 function frontmatterToYaml(frontmatter: Record<string, unknown>): string {
-	const preferredOrder = ["name", "description", "tools", "subagent_agents", "model", "thinking"];
+	const preferredOrder = ["name", "description", "tools", "subagent_agents", "extensions", "skills", "model", "thinking"];
 	const keys = [
 		...preferredOrder.filter((key) => Object.hasOwn(frontmatter, key)),
 		...Object.keys(frontmatter).filter((key) => !preferredOrder.includes(key)),
@@ -54,6 +54,9 @@ export function validateDraft(agent: AgentConfig, draft: AgentConfigPatch): stri
 	const tools = draft.tools ?? agent.tools;
 	if (tools.includes("subagent") && (!agent.subagentAgents || agent.subagentAgents.length === 0)) {
 		return "Agents with the subagent tool need subagent_agents in frontmatter (edit the .md file).";
+	}
+	if (agent.skills && agent.skills.length > 0 && !tools.includes("read")) {
+		return "Agents with skills need read in tools so they can load SKILL.md files.";
 	}
 	if (!draft.model?.includes("/")) return "Model must be provider/model.";
 	return null;

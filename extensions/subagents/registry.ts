@@ -49,6 +49,10 @@ function isSafeName(name: string): boolean {
 	return /^[a-zA-Z0-9_-]+$/.test(name);
 }
 
+function isCanonicalResourceName(name: string): boolean {
+	return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name);
+}
+
 function validateAgentConfig(agent: AgentConfig): string | null {
 	if (typeof agent.name !== "string" || !agent.name || !isSafeName(agent.name)) {
 		return "name must be a non-empty tool-safe identifier";
@@ -77,6 +81,21 @@ function validateAgentConfig(agent: AgentConfig): string | null {
 	}
 	if (agent.subagentAgents?.some((name) => typeof name !== "string" || !isSafeName(name))) {
 		return "subagent_agents contains an invalid agent name";
+	}
+	if (agent.extensions !== undefined && !Array.isArray(agent.extensions)) {
+		return "extensions must be a comma-separated list";
+	}
+	if (agent.extensions?.some((name) => typeof name !== "string" || !isCanonicalResourceName(name))) {
+		return "extensions contains an invalid canonical extension name";
+	}
+	if (agent.skills !== undefined && !Array.isArray(agent.skills)) {
+		return "skills must be a comma-separated list";
+	}
+	if (agent.skills?.some((name) => typeof name !== "string" || !isCanonicalResourceName(name))) {
+		return "skills contains an invalid canonical skill name";
+	}
+	if (agent.skills && agent.skills.length > 0 && !agent.tools.includes("read")) {
+		return "agents with skills must include the read tool";
 	}
 	return null;
 }
@@ -169,10 +188,23 @@ export function parseAgentMarkdown(filePath: string, source: AgentSource = "user
 			return null;
 		}
 	}
+	for (const field of ["extensions", "skills"]) {
+		if (
+			Object.hasOwn(parsed.frontmatter, field) &&
+			parsed.frontmatter[field] !== null &&
+			parsed.frontmatter[field] !== undefined &&
+			typeof parsed.frontmatter[field] !== "string"
+		) {
+			diagnostic(`Skipping invalid agent file ${filePath}: ${field} must be a string`);
+			return null;
+		}
+	}
 
 	const name = asString(parsed.frontmatter.name);
 	const tools = parseList(parsed.frontmatter.tools);
 	const subagentAgents = parseList(parsed.frontmatter.subagent_agents);
+	const extensions = parseList(parsed.frontmatter.extensions);
+	const skills = parseList(parsed.frontmatter.skills);
 	const agent: AgentConfig = {
 		name: name ?? "",
 		description: asString(parsed.frontmatter.description) ?? "",
@@ -183,6 +215,8 @@ export function parseAgentMarkdown(filePath: string, source: AgentSource = "user
 		filePath,
 		source,
 		...(subagentAgents ? { subagentAgents } : {}),
+		...(extensions ? { extensions } : {}),
+		...(skills ? { skills } : {}),
 	};
 
 	const error = validateAgentConfig(agent);

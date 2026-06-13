@@ -11,17 +11,19 @@ import {
 	parseAgentMarkdown,
 } from "../subagents/registry.ts";
 import {
+	collectNamedExtensionPaths,
 	discoverInstalledExtensionToolNames,
 	discoverSelectableToolNames,
 	resolveCursorProviderExtension,
 	resolveCustomToolExtension,
+	resolveNamedExtension,
 } from "../subagents/resolve-tools.ts";
 import { parseCursorThinkingActivity } from "../subagents/cursor-progress.ts";
 import { buildPiArgs, extractToolArgsPreview, formatSubagentFailure, MAX_SUBAGENT_DEPTH, progressSignature, runSubagent } from "../subagents/spawn.ts";
 import { renderSubagentCall, toolsToShow } from "../subagents/render.ts";
 import { displayAgentName, MAX_TOOLS_COLLAPSED } from "../subagents/types.ts";
 import { isDangerousBashCommand } from "../subagents/tools/safe-bash.ts";
-import { writeAgentConfig } from "../subagents/agent-io.ts";
+import { validateDraft, writeAgentConfig } from "../subagents/agent-io.ts";
 import {
 	loadMergedSubagentsUiConfig,
 	updateProjectSubagentsUiConfig,
@@ -291,6 +293,75 @@ Body.`,
 	assert.equal(agent?.subagentAgents?.join(","), "reviewer");
 });
 
+test("parseAgentMarkdown reads extension and skill allowlists", () => {
+	const cwd = tempDir("kumpul-subagents-parse-allowlists-");
+	const filePath = path.join(cwd, "test.md");
+	fs.writeFileSync(
+		filePath,
+		`---
+name: helper
+description: Helper agent
+tools: read
+extensions: find-docs, pi-web-access
+skills: diagnose, test-driven-development
+model: anthropic/claude-sonnet-4-6
+---
+Body.`,
+		"utf-8",
+	);
+	const agent = parseAgentMarkdown(filePath);
+	assert.deepEqual(agent?.extensions, ["find-docs", "pi-web-access"]);
+	assert.deepEqual(agent?.skills, ["diagnose", "test-driven-development"]);
+});
+
+test("frontmatter validation rejects non-canonical extension and skill names", () => {
+	const dir = tempDir("kumpul-subagents-canonical-names-");
+	fs.writeFileSync(
+		path.join(dir, "bad-extension.md"),
+		`---
+name: helper
+description: Helper agent
+tools: read
+extensions: find_docs
+model: anthropic/claude-sonnet-4-6
+---
+Body.`,
+		"utf-8",
+	);
+	fs.writeFileSync(
+		path.join(dir, "bad-skill.md"),
+		`---
+name: helper
+description: Helper agent
+tools: read
+skills: test_driven_development
+model: anthropic/claude-sonnet-4-6
+---
+Body.`,
+		"utf-8",
+	);
+	assert.equal(parseAgentMarkdown(path.join(dir, "bad-extension.md")), null);
+	assert.equal(parseAgentMarkdown(path.join(dir, "bad-skill.md")), null);
+});
+
+test("frontmatter validation rejects skills without read access", () => {
+	const dir = tempDir("kumpul-subagents-skill-read-");
+	const filePath = path.join(dir, "helper.md");
+	fs.writeFileSync(
+		filePath,
+		`---
+name: helper
+description: Helper agent
+tools: grep
+skills: diagnose
+model: anthropic/claude-sonnet-4-6
+---
+Body.`,
+		"utf-8",
+	);
+	assert.equal(parseAgentMarkdown(filePath), null);
+});
+
 test("frontmatter validation skips invalid markdown", () => {
 	const dir = tempDir("kumpul-subagents-skip-");
 	fs.writeFileSync(path.join(dir, "bad.md"), "# no frontmatter\n", "utf-8");
@@ -427,12 +498,163 @@ test("tool resolution fails fast for unknown tools", async () => {
 	await assert.rejects(buildPiArgs(testAgent({ tools: ["missing_tool"] }), "task"), /Unable to resolve tools/);
 });
 
+test("buildPiArgs loads named extension allowlist while keeping discovery disabled", async () => {
+	const { args } = await buildPiArgs(testAgent({ tools: ["read"], extensions: ["find-docs"] }), "task");
+	const noExtensionsIdx = args.indexOf("--no-extensions");
+	const extensionIdx = args.indexOf("--extension");
+	assert.ok(noExtensionsIdx >= 0, "expected --no-extensions");
+	assert.ok(extensionIdx > noExtensionsIdx, "expected explicit extension after --no-extensions");
+	assert.match(args[extensionIdx + 1] ?? "", /extensions\/find-docs\/index\.ts$/);
+});
+
+test("extension allowlist resolves extension names instead of tool-name collisions", async () => {
+	const fakeDir = tempDir("kumpul-subagents-fake-ext-");
+	const fakeExtension = path.join(fakeDir, "index.ts");
+	fs.writeFileSync(fakeExtension, "export default function () {}\n", "utf-8");
+	const { args } = await buildPiArgs(
+		testAgent({ tools: ["read"], extensions: ["find-docs"] }),
+		"task",
+		new Map([["find-docs", fakeExtension]]),
+	);
+	const extensionIdx = args.indexOf("--extension");
+	assert.match(args[extensionIdx + 1] ?? "", /extensions\/find-docs\/index\.ts$/);
+	assert.notEqual(args[extensionIdx + 1], fakeExtension);
+});
+
+test("extension allowlist resolves project-local extension names from cwd", async () => {
+	const cwd = tempDir("kumpul-subagents-project-ext-");
+	const extDir = path.join(cwd, ".pi", "extensions", "project-helper");
+	fs.mkdirSync(extDir, { recursive: true });
+	fs.writeFileSync(path.join(extDir, "index.ts"), "export default function () {}\n", "utf-8");
+	const { args } = await buildPiArgs(
+		testAgent({ tools: ["read"], extensions: ["project-helper"] }),
+		"task",
+		new Map(),
+		new Map(),
+		cwd,
+	);
+	const extensionIdx = args.indexOf("--extension");
+	assert.equal(args[extensionIdx + 1], path.join(extDir, "index.ts"));
+});
+
+test("project-local extension names take precedence over loaded metadata", async () => {
+	const cwd = tempDir("kumpul-subagents-project-ext-win-");
+	const extDir = path.join(cwd, ".pi", "extensions", "project-helper");
+	fs.mkdirSync(extDir, { recursive: true });
+	fs.writeFileSync(path.join(extDir, "index.ts"), "export default function () {}\n", "utf-8");
+	const fakeDir = tempDir("kumpul-subagents-loaded-ext-");
+	const fakeExtension = path.join(fakeDir, "index.ts");
+	fs.writeFileSync(fakeExtension, "export default function () {}\n", "utf-8");
+	const { args } = await buildPiArgs(
+		testAgent({ tools: ["read"], extensions: ["project-helper"] }),
+		"task",
+		new Map(),
+		new Map(),
+		cwd,
+		new Map([["project-helper", fakeExtension]]),
+	);
+	const extensionIdx = args.indexOf("--extension");
+	assert.equal(args[extensionIdx + 1], path.join(extDir, "index.ts"));
+});
+
+test("named extension metadata ignores tool implementation file basenames", () => {
+	const toolFile = path.join(tempDir("kumpul-subagents-tool-file-"), "tools", "project-helper.ts");
+	fs.mkdirSync(path.dirname(toolFile), { recursive: true });
+	fs.writeFileSync(toolFile, "export default function () {}\n", "utf-8");
+	const names = collectNamedExtensionPaths([
+		{ name: "project_helper", label: "Project Helper", description: "", parameters: {}, sourceInfo: { path: toolFile } },
+	] as never);
+	assert.equal(names.has("project-helper"), false);
+});
+
+test("buildPiArgs loads named skill allowlist without auto-invoking it", async () => {
+	const { args } = await buildPiArgs(testAgent({ tools: ["read"], skills: ["test-driven-development"] }), "task");
+	const noSkillsIdx = args.indexOf("--no-skills");
+	const skillIdx = args.indexOf("--skill");
+	assert.ok(noSkillsIdx >= 0, "expected --no-skills");
+	assert.ok(skillIdx > noSkillsIdx, "expected explicit skill after --no-skills");
+	assert.match(args[skillIdx + 1] ?? "", /skills\/test-driven-development\/SKILL\.md$/);
+	assert.ok(args.includes("Task: task"));
+	assert.equal(args.some((arg) => arg.startsWith("/skill:")), false);
+});
+
+test("skill allowlist resolves project skills before package skills", async () => {
+	const cwd = tempDir("kumpul-subagents-project-skill-");
+	const skillDir = path.join(cwd, ".pi", "skills", "test-driven-development");
+	fs.mkdirSync(skillDir, { recursive: true });
+	fs.writeFileSync(
+		path.join(skillDir, "SKILL.md"),
+		`---
+name: test-driven-development
+description: Project TDD skill.
+---
+Project skill body.
+`,
+		"utf-8",
+	);
+	const { args } = await buildPiArgs(
+		testAgent({ tools: ["read"], skills: ["test-driven-development"] }),
+		"task",
+		new Map(),
+		new Map(),
+		cwd,
+	);
+	const skillIdx = args.indexOf("--skill");
+	assert.equal(args[skillIdx + 1], path.join(skillDir, "SKILL.md"));
+});
+
+test("project-local skills take precedence over loaded skill metadata", async () => {
+	const cwd = tempDir("kumpul-subagents-project-skill-win-");
+	const skillDir = path.join(cwd, ".pi", "skills", "diagnose");
+	fs.mkdirSync(skillDir, { recursive: true });
+	fs.writeFileSync(
+		path.join(skillDir, "SKILL.md"),
+		`---
+name: diagnose
+description: Project diagnose skill.
+---
+Project skill body.
+`,
+		"utf-8",
+	);
+	const fakeDir = tempDir("kumpul-subagents-loaded-skill-");
+	const fakeSkill = path.join(fakeDir, "SKILL.md");
+	fs.writeFileSync(fakeSkill, "---\nname: diagnose\ndescription: Fake.\n---\nFake.\n", "utf-8");
+	const { args } = await buildPiArgs(
+		testAgent({ tools: ["read"], skills: ["diagnose"] }),
+		"task",
+		new Map(),
+		new Map([["diagnose", fakeSkill]]),
+		cwd,
+	);
+	const skillIdx = args.indexOf("--skill");
+	assert.equal(args[skillIdx + 1], path.join(skillDir, "SKILL.md"));
+});
+
+test("buildPiArgs fails fast for unknown extension and skill allowlist names", async () => {
+	await assert.rejects(
+		buildPiArgs(testAgent({ tools: ["read"], extensions: ["missing-extension"] }), "task"),
+		/Unable to resolve extensions/,
+	);
+	await assert.rejects(
+		buildPiArgs(testAgent({ tools: ["read"], skills: ["missing-skill"] }), "task"),
+		/Unable to resolve skills/,
+	);
+});
+
 test("config-io merges extension enabled and disabledAgents in project yaml", () => {
 	const cwd = tempDir("kumpul-subagents-ui-config-");
 	updateProjectSubagentsUiConfig(cwd, { enabled: false, disabledAgents: new Set(["reviewer"]) });
 	const loaded = loadMergedSubagentsUiConfig(cwd);
 	assert.equal(loaded.enabled, false);
 	assert.ok(loaded.disabledAgents.has("reviewer"));
+});
+
+test("validateDraft rejects skilled agents without read", () => {
+	const agent = testAgent({ tools: ["read"], skills: ["diagnose"] });
+	const error = validateDraft(agent, { tools: ["grep"], model: agent.model });
+	assert.ok(error);
+	assert.match(error, /read/);
 });
 
 test("writeAgentConfig updates frontmatter and preserves body", () => {
@@ -477,6 +699,26 @@ test("discoverInstalledExtensionToolNames scans kumpul extensions", () => {
 	const names = discoverInstalledExtensionToolNames();
 	assert.ok(names.includes("subagent"));
 	assert.ok(names.includes("find_docs"));
+});
+
+test("discoverInstalledExtensionToolNames scans resolver-supported npm extension packages", (t) => {
+	if (!resolveNamedExtension("pi-web-access")) {
+		t.skip("pi-web-access not installed");
+		return;
+	}
+	const names = discoverInstalledExtensionToolNames();
+	assert.ok(names.includes("fetch_content"));
+});
+
+test("tools discovered from npm extension packages are spawnable", async (t) => {
+	const piWebAccess = resolveNamedExtension("pi-web-access");
+	if (!piWebAccess) {
+		t.skip("pi-web-access not installed");
+		return;
+	}
+	const { args } = await buildPiArgs(testAgent({ tools: ["fetch_content"] }), "task", new Map(), new Map(), process.cwd());
+	const extensionIdx = args.indexOf("--extension");
+	assert.equal(args[extensionIdx + 1], piWebAccess);
 });
 
 test("discoverSelectableToolNames preserves agent configured tools", () => {
@@ -591,6 +833,9 @@ exit 3
 				return [];
 			},
 			getAllTools() {
+				return [];
+			},
+			getCommands() {
 				return [];
 			},
 			setActiveTools() {},

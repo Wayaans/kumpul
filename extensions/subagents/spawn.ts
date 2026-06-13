@@ -19,6 +19,10 @@ import {
 	BUILTIN_TOOLS,
 	resolveCursorProviderExtension,
 	resolveCustomToolExtension,
+	resolveNamedExtensions,
+	resolveNamedSkills,
+	type ExtensionNamePaths,
+	type SkillPaths,
 	type ToolExtensionPaths,
 } from "./resolve-tools.ts";
 import type { ToolEvent } from "./types.ts";
@@ -124,6 +128,9 @@ export async function buildPiArgs(
 	agent: AgentConfig,
 	task: string,
 	toolExtensionPaths: ToolExtensionPaths = new Map(),
+	skillPaths: SkillPaths = new Map(),
+	cwd: string = process.cwd(),
+	extensionNamePaths: ExtensionNamePaths = new Map(),
 ): Promise<{ args: string[]; tempDir: string; childEnv: NodeJS.ProcessEnv }> {
 	const depth = getCurrentSubagentDepth();
 	if (depth >= MAX_SUBAGENT_DEPTH) {
@@ -151,6 +158,17 @@ export async function buildPiArgs(
 	}
 	if (unresolvedTools.length > 0) {
 		throw new Error(`Unable to resolve tools for agent ${agent.name}: ${unresolvedTools.join(", ")}`);
+	}
+
+	const extensionAllowlist = resolveNamedExtensions(agent.extensions, extensionNamePaths, cwd);
+	if (extensionAllowlist.unresolved.length > 0) {
+		throw new Error(`Unable to resolve extensions for agent ${agent.name}: ${extensionAllowlist.unresolved.join(", ")}`);
+	}
+	for (const extPath of extensionAllowlist.paths) extensionPaths.add(extPath);
+
+	const skillAllowlist = resolveNamedSkills(agent.skills, skillPaths, cwd);
+	if (skillAllowlist.unresolved.length > 0) {
+		throw new Error(`Unable to resolve skills for agent ${agent.name}: ${skillAllowlist.unresolved.join(", ")}`);
 	}
 
 	if (agent.model.startsWith("cursor/")) {
@@ -181,6 +199,10 @@ export async function buildPiArgs(
 
 	for (const extPath of extensionPaths) {
 		args.push("--extension", extPath);
+	}
+
+	for (const skillPath of skillAllowlist.paths) {
+		args.push("--skill", skillPath);
 	}
 
 	args.push("--model", agent.model);
@@ -258,10 +280,12 @@ export async function runSubagent(
 	signal: AbortSignal | undefined,
 	onUpdate?: (progress: AgentProgress, usage: AgentResult["usage"]) => void,
 	toolExtensionPaths: ToolExtensionPaths = new Map(),
+	skillPaths: SkillPaths = new Map(),
+	extensionNamePaths: ExtensionNamePaths = new Map(),
 	options: RunSubagentOptions = {},
 ): Promise<AgentResult> {
 	const { alias } = options;
-	const { args, tempDir, childEnv } = await buildPiArgs(agent, task, toolExtensionPaths);
+	const { args, tempDir, childEnv } = await buildPiArgs(agent, task, toolExtensionPaths, skillPaths, cwd, extensionNamePaths);
 	const command = args[0];
 	const spawnArgs = args.slice(1);
 

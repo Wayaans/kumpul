@@ -41,7 +41,23 @@ Add markdown with YAML frontmatter:
 
 Project agents are a trust boundary: set `allowProjectAgents: true` in `extensions/subagents/config.json` before loading them. Even then, project agents cannot override the built-in privileged `agent` or `reviewer` unless `allowProjectAgentOverrides: true` is also set.
 
-Required frontmatter: `name`, `description`, `tools`, optional `model`, `thinking`, `subagent_agents`. Invalid files are skipped with a diagnostic. `tools` and `subagent_agents` must be comma-separated tool-safe identifiers; `model` must be `provider/model`; `thinking` must be one of `minimal`, `low`, `medium`, `high`, `xhigh`.
+Required frontmatter: `name`, `description`, `tools`; optional frontmatter: `model`, `thinking`, `subagent_agents`, `extensions`, `skills`. Invalid files are skipped with a diagnostic. `tools` and `subagent_agents` must be comma-separated tool-safe identifiers; `extensions` and `skills` must be comma-separated canonical names (`lower-kebab-case`); `model` must be `provider/model`; `thinking` must be one of `minimal`, `low`, `medium`, `high`, `xhigh`.
+
+Child spawns keep discovery disabled with `--no-extensions` and `--no-skills`. Use `extensions` as an explicit allowlist of extension names to load by name, not path:
+
+```yaml
+extensions: find-docs, pi-web-access
+```
+
+Extension names resolve from project `.pi/extensions`, currently loaded extension metadata, this package, global extensions, and installed npm package entry points.
+
+Use `skills` as an explicit allowlist of skill names:
+
+```yaml
+skills: diagnose, test-driven-development
+```
+
+Skills resolve from project skills, currently loaded skill metadata, global skills, and this package. They are loaded with `--skill` so the child can use Pi's normal skill flow, but no skill is invoked at startup. Agents with `skills` must include `read` in `tools` so they can load full `SKILL.md` files on demand.
 
 `cursor/*` models require [pi-cursor-sdk](https://www.npmjs.com/package/pi-cursor-sdk) installed globally (`pi install npm:pi-cursor-sdk`). Child spawns load that provider via `--extension` while keeping `--no-extensions` for everything else.
 
@@ -54,9 +70,9 @@ Agents that include the `subagent` tool must also set `subagent_agents` to a bou
 | Tool | Resolved from |
 |------|----------------|
 | `safe_bash`, `subagent`, `find_docs` | This package |
-| `fetch_content` | Active pi tool metadata (e.g. [pi-web-access](https://www.npmjs.com/package/pi-web-access)) |
+| `fetch_content` | Active pi tool metadata or installed npm pi-package metadata (e.g. [pi-web-access](https://www.npmjs.com/package/pi-web-access)) |
 
-Unresolved tools fail fast instead of being silently omitted. Raw `bash` is not available to subagents; use `safe_bash`.
+Unresolved tools, extension names, and skill names fail fast instead of being silently omitted. Raw `bash` is not available to subagents; use `safe_bash`.
 
 `safe_bash` blocks common destructive commands and shell-install patterns (`rm -rf /`, `sudo`, `mkfs`, `curl|sh`, etc.). It is a denylist, not a sandbox; only delegate shell access to agents you trust.
 

@@ -15,7 +15,7 @@ import {
 	renderSubagentResult,
 } from "./render.ts";
 import { formatDuration, formatSubagentFailure, runSubagent, Semaphore } from "./spawn.ts";
-import { collectToolExtensionPaths } from "./resolve-tools.ts";
+import { collectNamedExtensionPaths, collectSkillPaths, collectToolExtensionPaths } from "./resolve-tools.ts";
 import type { AgentResult, ExtensionConfig, SubagentDetails } from "./types.ts";
 
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -168,7 +168,11 @@ export default function (pi: ExtensionAPI): void {
 				},
 			};
 
-			const toolExtensionPaths = collectToolExtensionPaths(pi.getAllTools());
+			const tools = pi.getAllTools();
+			const commands = pi.getCommands();
+			const toolExtensionPaths = collectToolExtensionPaths(tools);
+			const extensionNamePaths = collectNamedExtensionPaths(tools, commands);
+			const skillPaths = collectSkillPaths(commands);
 			const result = await semaphore.run(() =>
 				runSubagent(
 					agent,
@@ -198,6 +202,8 @@ export default function (pi: ExtensionAPI): void {
 						});
 					},
 					toolExtensionPaths,
+					skillPaths,
+					extensionNamePaths,
 					{ alias },
 				),
 			);
