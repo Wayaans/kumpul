@@ -1,6 +1,9 @@
 import fs from "node:fs";
+import path from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import type { AgentConfig } from "./types.ts";
+import { stringify } from "yaml";
+import { getProjectAgentsDir } from "./registry.ts";
+import { parseModelRef, THINKING_LEVELS, type AgentConfig } from "./types.ts";
 
 export interface AgentConfigPatch {
 	tools?: string[];
@@ -14,42 +17,48 @@ function formatList(values: string[]): string {
 	return values.join(", ");
 }
 
+function applyPatch(frontmatter: Record<string, unknown>, patch: AgentConfigPatch): Record<string, unknown> {
+	const next = { ...frontmatter };
+	if (patch.tools !== undefined) next.tools = formatList(patch.tools);
+	if (patch.extensions !== undefined) {
+		if (patch.extensions.length > 0) next.extensions = formatList(patch.extensions);
+		else delete next.extensions;
+	}
+	if (patch.skills !== undefined) {
+		if (patch.skills.length > 0) next.skills = formatList(patch.skills);
+		else delete next.skills;
+	}
+	if (patch.model !== undefined) next.model = patch.model;
+	if (patch.thinking !== undefined) next.thinking = patch.thinking;
+	return next;
+}
+
 function frontmatterToYaml(frontmatter: Record<string, unknown>): string {
 	const preferredOrder = ["name", "description", "tools", "subagent_agents", "extensions", "skills", "model", "thinking"];
-	const keys = [
-		...preferredOrder.filter((key) => Object.hasOwn(frontmatter, key)),
-		...Object.keys(frontmatter).filter((key) => !preferredOrder.includes(key)),
-	];
-	const lines = ["---"];
-	for (const key of keys) {
-		const value = frontmatter[key];
-		if (value === undefined) continue;
-		lines.push(`${key}: ${String(value)}`);
+	const ordered: Record<string, unknown> = {};
+	for (const key of preferredOrder) {
+		if (Object.hasOwn(frontmatter, key) && frontmatter[key] !== undefined) ordered[key] = frontmatter[key];
 	}
-	lines.push("---");
-	return lines.join("\n");
+	for (const key of Object.keys(frontmatter)) {
+		if (!preferredOrder.includes(key) && frontmatter[key] !== undefined) ordered[key] = frontmatter[key];
+	}
+	const yaml = stringify(ordered, { lineWidth: 0 }).trimEnd().replace(/: ""$/gm, ":");
+	return `---\n${yaml}\n---`;
+}
+
+function writeMarkdownFile(filePath: string, frontmatter: Record<string, unknown>, body: string): void {
+	const next = `${frontmatterToYaml(frontmatter)}\n\n${body.replace(/^\n+/, "")}`;
+	const content = next.endsWith("\n") ? next : `${next}\n`;
+	fs.mkdirSync(path.dirname(filePath), { recursive: true });
+	const tempPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.tmp`);
+	fs.writeFileSync(tempPath, content, "utf-8");
+	fs.renameSync(tempPath, filePath);
 }
 
 export function writeAgentConfig(filePath: string, patch: AgentConfigPatch): void {
 	const content = fs.readFileSync(filePath, "utf-8");
 	const parsed = parseFrontmatter<Record<string, unknown>>(content);
-	const frontmatter = { ...parsed.frontmatter };
-
-	if (patch.tools !== undefined) frontmatter.tools = formatList(patch.tools);
-	if (patch.extensions !== undefined) {
-		if (patch.extensions.length > 0) frontmatter.extensions = formatList(patch.extensions);
-		else delete frontmatter.extensions;
-	}
-	if (patch.skills !== undefined) {
-		if (patch.skills.length > 0) frontmatter.skills = formatList(patch.skills);
-		else delete frontmatter.skills;
-	}
-	if (patch.model) frontmatter.model = patch.model;
-	if (patch.thinking) frontmatter.thinking = patch.thinking;
-
-	const body = parsed.body.replace(/^\n+/, "");
-	const next = `${frontmatterToYaml(frontmatter)}\n\n${body}`;
-	fs.writeFileSync(filePath, next.endsWith("\n") ? next : `${next}\n`, "utf-8");
+	writeMarkdownFile(filePath, applyPatch(parsed.frontmatter, patch), parsed.body);
 }
 
 export function draftFromAgent(agent: AgentConfig): AgentConfigPatch {
@@ -93,6 +102,56 @@ export function canEditSkills(tools: string[]): boolean {
 	return tools.includes("read");
 }
 
+function sameList(a: string[] | undefined, b: string[] | undefined): boolean {
+	const left = a ?? [];
+	const right = b ?? [];
+	return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+export function changedDraftPatch(agent: AgentConfig, draft: AgentConfigPatch): AgentConfigPatch {
+	const patch: AgentConfigPatch = {};
+	if (draft.tools !== undefined && !sameList(draft.tools, agent.tools)) patch.tools = draft.tools;
+	if (draft.extensions !== undefined && !sameList(draft.extensions, agent.extensions)) patch.extensions = draft.extensions;
+	if (draft.skills !== undefined && !sameList(draft.skills, agent.skills)) patch.skills = draft.skills;
+	if (draft.model !== undefined && draft.model !== agent.model) patch.model = draft.model;
+	if (draft.thinking !== undefined && draft.thinking !== agent.thinking) patch.thinking = draft.thinking;
+	return patch;
+}
+
+export function writeProjectAgentConfig(sourceAgent: AgentConfig, projectFilePath: string, patch: AgentConfigPatch): void {
+	let baseFrontmatter: Record<string, unknown> | undefined;
+	try {
+		if (fs.existsSync(sourceAgent.filePath)) {
+			baseFrontmatter = parseFrontmatter<Record<string, unknown>>(fs.readFileSync(sourceAgent.filePath, "utf-8")).frontmatter;
+		}
+	} catch {
+		baseFrontmatter = undefined;
+	}
+	baseFrontmatter ??= {
+		name: sourceAgent.name,
+		description: sourceAgent.description,
+		tools: formatList(sourceAgent.tools),
+		...(sourceAgent.subagentAgents ? { subagent_agents: formatList(sourceAgent.subagentAgents) } : {}),
+		...(sourceAgent.extensions ? { extensions: formatList(sourceAgent.extensions) } : {}),
+		...(sourceAgent.skills ? { skills: formatList(sourceAgent.skills) } : {}),
+		model: sourceAgent.model,
+		thinking: sourceAgent.thinking,
+	};
+	if (baseFrontmatter.model === null || baseFrontmatter.model === undefined) baseFrontmatter.model = "";
+	if (baseFrontmatter.thinking === null || baseFrontmatter.thinking === undefined) baseFrontmatter.thinking = "";
+	writeMarkdownFile(projectFilePath, applyPatch(baseFrontmatter, patch), sourceAgent.systemPrompt);
+}
+
+export function persistAgentDraft(cwd: string, agent: AgentConfig, draft: AgentConfigPatch): string | null {
+	const error = validateDraft(agent, draft);
+	if (error) return error;
+	const patch = changedDraftPatch(agent, draft);
+	if (Object.keys(patch).length === 0) return "No changes to save.";
+	if (agent.source === "project") writeAgentConfig(agent.filePath, patch);
+	else writeProjectAgentConfig(agent, path.join(getProjectAgentsDir(cwd), `${agent.name}.md`), patch);
+	return null;
+}
+
 export function validateDraft(agent: AgentConfig, draft: AgentConfigPatch): string | null {
 	const tools = draft.tools ?? agent.tools;
 	const skills = draft.skills ?? agent.skills ?? [];
@@ -104,6 +163,10 @@ export function validateDraft(agent: AgentConfig, draft: AgentConfigPatch): stri
 		return "Agents with skills need read in tools so they can load SKILL.md files.";
 	}
 	const model = draft.model ?? agent.model;
-	if (!model.includes("/")) return "Model must be provider/model.";
+	if (model !== "" && !parseModelRef(model)) return "Model must be empty or provider/model.";
+	const thinking = draft.thinking ?? agent.thinking;
+	if (thinking !== "" && !THINKING_LEVELS.includes(thinking as never)) {
+		return `Thinking must be empty or one of ${THINKING_LEVELS.join(", ")}.`;
+	}
 	return null;
 }

@@ -2,21 +2,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import type { AgentConfig, AgentSource } from "./types.ts";
+import { parseModelRef, THINKING_LEVELS, type AgentConfig, type AgentSource } from "./types.ts";
 
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
 const PACKAGE_AGENTS_DIR = path.join(EXTENSION_DIR, "agents");
-const PRIVILEGED_AGENT_NAMES = new Set(["agent", "reviewer"]);
-const VALID_THINKING = new Set(["minimal", "low", "medium", "high", "xhigh"]);
-
-export interface DiscoverAgentsOptions {
-	allowProjectAgents?: boolean;
-	allowProjectAgentOverrides?: boolean;
-}
+const PROJECT_AGENTS_RELATIVE = path.join(".pi", "kumpul", "agens");
 
 let agents: AgentConfig[] = [];
 const dynamicAgents = new Map<string, AgentConfig>();
-let discoverOptions: DiscoverAgentsOptions = {};
 let lastDiscoverCwd = process.cwd();
 
 function getSubagentAllowlist(): string[] | undefined {
@@ -64,11 +57,10 @@ function validateAgentConfig(agent: AgentConfig): string | null {
 	if (agent.tools.some((tool) => typeof tool !== "string" || !tool || !isSafeName(tool))) {
 		return "tools contains an invalid tool name";
 	}
-	if (typeof agent.model !== "string" || !agent.model.includes("/") || agent.model.startsWith("/") || agent.model.endsWith("/")) {
-		return "model must be in provider/model form";
-	}
-	if (typeof agent.thinking !== "string" || !VALID_THINKING.has(agent.thinking)) {
-		return `thinking must be one of ${Array.from(VALID_THINKING).join(", ")}`;
+	if (typeof agent.model !== "string") return "model must be a string";
+	if (agent.model !== "" && !parseModelRef(agent.model)) return "model must be empty or in provider/model form";
+	if (typeof agent.thinking !== "string" || (agent.thinking !== "" && !THINKING_LEVELS.includes(agent.thinking as never))) {
+		return `thinking must be empty or one of ${THINKING_LEVELS.join(", ")}`;
 	}
 	if (typeof agent.systemPrompt !== "string") return "system prompt must be a string";
 	if (typeof agent.filePath !== "string" || agent.filePath.trim() === "") return "filePath must be a non-empty string";
@@ -147,7 +139,7 @@ export function unregisterAgent(name: string): void {
 }
 
 function rebuildAgentList(): void {
-	const fileAgents = discoverFileAgents(lastDiscoverCwd, discoverOptions);
+	const fileAgents = discoverFileAgents(lastDiscoverCwd);
 	const map = new Map<string, AgentConfig>();
 	for (const agent of fileAgents) {
 		map.set(agent.name, agent);
@@ -158,9 +150,8 @@ function rebuildAgentList(): void {
 	agents = Array.from(map.values());
 }
 
-export function loadAgents(cwd: string = process.cwd(), options: DiscoverAgentsOptions = discoverOptions): AgentConfig[] {
+export function loadAgents(cwd: string = process.cwd()): AgentConfig[] {
 	lastDiscoverCwd = sanitizeDiscoveryCwd(cwd);
-	discoverOptions = options;
 	rebuildAgentList();
 	return agents;
 }
@@ -183,7 +174,12 @@ export function parseAgentMarkdown(filePath: string, source: AgentSource = "user
 	}
 
 	for (const field of ["model", "thinking", "subagent_agents"]) {
-		if (Object.hasOwn(parsed.frontmatter, field) && typeof parsed.frontmatter[field] !== "string") {
+		if (
+			Object.hasOwn(parsed.frontmatter, field) &&
+			parsed.frontmatter[field] !== null &&
+			parsed.frontmatter[field] !== undefined &&
+			typeof parsed.frontmatter[field] !== "string"
+		) {
 			diagnostic(`Skipping invalid agent file ${filePath}: ${field} must be a string`);
 			return null;
 		}
@@ -205,12 +201,13 @@ export function parseAgentMarkdown(filePath: string, source: AgentSource = "user
 	const subagentAgents = parseList(parsed.frontmatter.subagent_agents);
 	const extensions = parseList(parsed.frontmatter.extensions);
 	const skills = parseList(parsed.frontmatter.skills);
+	const model = parsed.frontmatter.model === null ? "" : asString(parsed.frontmatter.model);
 	const agent: AgentConfig = {
 		name: name ?? "",
 		description: asString(parsed.frontmatter.description) ?? "",
 		tools: tools ?? [],
-		model: asString(parsed.frontmatter.model) ?? "anthropic/claude-sonnet-4-6",
-		thinking: asString(parsed.frontmatter.thinking) ?? "medium",
+		model: model ?? "",
+		thinking: asString(parsed.frontmatter.thinking) ?? "",
 		systemPrompt: parsed.body,
 		filePath,
 		source,
@@ -262,7 +259,7 @@ function isDirectory(p: string): boolean {
 export function findNearestProjectAgentsDir(cwd: string): string | null {
 	let currentDir = sanitizeDiscoveryCwd(cwd);
 	while (true) {
-		const candidate = path.join(currentDir, ".pi", "agents");
+		const candidate = path.join(currentDir, PROJECT_AGENTS_RELATIVE);
 		if (isDirectory(candidate)) return candidate;
 
 		const parentDir = path.dirname(currentDir);
@@ -271,8 +268,24 @@ export function findNearestProjectAgentsDir(cwd: string): string | null {
 	}
 }
 
-/** Package → user global → trusted project (later wins except privileged built-ins). */
-export function discoverFileAgents(cwd: string, options: DiscoverAgentsOptions = {}): AgentConfig[] {
+export function getProjectAgentsDir(cwd: string): string {
+	const existing = findNearestProjectAgentsDir(cwd);
+	if (existing) return existing;
+
+	let currentDir = sanitizeDiscoveryCwd(cwd);
+	while (true) {
+		if (fs.existsSync(path.join(currentDir, ".git")) || fs.existsSync(path.join(currentDir, ".pi"))) {
+			return path.join(currentDir, PROJECT_AGENTS_RELATIVE);
+		}
+
+		const parentDir = path.dirname(currentDir);
+		if (parentDir === currentDir) return path.join(sanitizeDiscoveryCwd(cwd), PROJECT_AGENTS_RELATIVE);
+		currentDir = parentDir;
+	}
+}
+
+/** Package → user global → project-local kumpul overrides. */
+export function discoverFileAgents(cwd: string): AgentConfig[] {
 	const safeCwd = sanitizeDiscoveryCwd(cwd);
 	const map = new Map<string, AgentConfig>();
 
@@ -285,16 +298,10 @@ export function discoverFileAgents(cwd: string, options: DiscoverAgentsOptions =
 		map.set(agent.name, agent);
 	}
 
-	if (options.allowProjectAgents) {
-		const projectDir = findNearestProjectAgentsDir(safeCwd);
-		if (projectDir) {
-			for (const agent of loadAgentsFromDir(projectDir, "project")) {
-				if (!options.allowProjectAgentOverrides && PRIVILEGED_AGENT_NAMES.has(agent.name)) {
-					diagnostic(`Skipping project agent ${agent.name}: overriding built-in privileged agents is disabled`);
-					continue;
-				}
-				map.set(agent.name, agent);
-			}
+	const projectDir = findNearestProjectAgentsDir(safeCwd);
+	if (projectDir) {
+		for (const agent of loadAgentsFromDir(projectDir, "project")) {
+			map.set(agent.name, agent);
 		}
 	}
 

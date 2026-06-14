@@ -9,7 +9,7 @@ import {
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig, AgentProgress, AgentResult } from "./types.ts";
-import { displayAgentName } from "./types.ts";
+import { displayAgentName, isCursorModel } from "./types.ts";
 import { MAX_TOOLS_COLLAPSED } from "./types.ts";
 import {
 	parseCursorThinkingActivity,
@@ -123,6 +123,25 @@ function buildChildEnv(agent: AgentConfig): NodeJS.ProcessEnv {
 	return env;
 }
 
+export interface InheritedAgentConfig {
+	model?: string;
+	thinking?: string;
+}
+
+export function resolveEffectiveAgent(agent: AgentConfig, inherited: InheritedAgentConfig = {}): AgentConfig {
+	const model = agent.model || inherited.model || "";
+	const extensions = [
+		...(agent.extensions ?? []),
+		...(isCursorModel(model) && !agent.extensions?.includes("pi-cursor-sdk") ? ["pi-cursor-sdk"] : []),
+	];
+	return {
+		...agent,
+		model,
+		thinking: agent.thinking || inherited.thinking || "",
+		...(extensions.length > 0 ? { extensions } : {}),
+	};
+}
+
 export async function buildPiArgs(
 	agent: AgentConfig,
 	task: string,
@@ -131,6 +150,7 @@ export async function buildPiArgs(
 	cwd: string = process.cwd(),
 	extensionNamePaths: ExtensionNamePaths = new Map(),
 ): Promise<{ args: string[]; tempDir: string; childEnv: NodeJS.ProcessEnv }> {
+	agent = resolveEffectiveAgent(agent);
 	const depth = getCurrentSubagentDepth();
 	if (depth >= MAX_SUBAGENT_DEPTH) {
 		throw new Error(`Subagent depth ${depth} exceeds maximum ${MAX_SUBAGENT_DEPTH}`);
@@ -194,8 +214,8 @@ export async function buildPiArgs(
 		args.push("--skill", skillPath);
 	}
 
-	args.push("--model", agent.model);
-	args.push("--thinking", agent.thinking);
+	if (agent.model) args.push("--model", agent.model);
+	if (agent.thinking) args.push("--thinking", agent.thinking);
 	args.push("--append-system-prompt", promptPath);
 
 	const TASK_LIMIT = 8000;
@@ -260,6 +280,7 @@ function throttle<T extends (...args: unknown[]) => void>(fn: T, ms: number): T 
 
 export interface RunSubagentOptions {
 	alias?: string;
+	inherited?: InheritedAgentConfig;
 }
 
 export async function runSubagent(
@@ -274,6 +295,7 @@ export async function runSubagent(
 	options: RunSubagentOptions = {},
 ): Promise<AgentResult> {
 	const { alias } = options;
+	agent = resolveEffectiveAgent(agent, options.inherited);
 	const { args, tempDir, childEnv } = await buildPiArgs(agent, task, toolExtensionPaths, skillPaths, cwd, extensionNamePaths);
 	const command = args[0];
 	const spawnArgs = args.slice(1);
@@ -302,7 +324,7 @@ export async function runSubagent(
 	const startTime = Date.now();
 	const progress = result.progress;
 	let lastSig = "";
-	const trackCursorThinking = agent.model.startsWith("cursor/");
+	const trackCursorThinking = isCursorModel(agent.model);
 
 	const findCursorPendingTool = (): ToolEvent | undefined => {
 		for (let i = progress.recentTools.length - 1; i >= 0; i--) {

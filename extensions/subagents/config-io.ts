@@ -92,13 +92,13 @@ function extractConfig(document: unknown): Partial<SubagentsUiConfig> {
 		return extractFromRecord(document);
 	}
 
-	if (document.extension === undefined && (document.enabled !== undefined || document.disabledAgents !== undefined)) {
-		return extractFromRecord(document);
-	}
-
 	const nested = document.subagents ?? document["pi-subagents"];
 	if (typeof nested === "boolean") return { enabled: nested };
 	if (isRecord(nested)) return extractFromRecord(nested);
+
+	if (document.extension === undefined && (document.enabled !== undefined || document.disabledAgents !== undefined)) {
+		return extractFromRecord(document);
+	}
 
 	return {};
 }
@@ -156,8 +156,11 @@ function mergeSubagentsConfig(existingDocument: unknown, saved: SubagentsUiConfi
 	}
 
 	if (isRecord(existingDocument)) {
+		const { enabled: _enabled, disabledAgents: _disabledAgents, ...rest } = existingDocument;
+		void _enabled;
+		void _disabledAgents;
 		return {
-			...existingDocument,
+			...rest,
 			subagents: {
 				enabled: saved.enabled,
 				...(disabledAgents.length > 0 ? { disabledAgents } : {}),

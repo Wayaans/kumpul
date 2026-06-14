@@ -1,5 +1,20 @@
 export type AgentSource = "package" | "user" | "project" | "dynamic";
 
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+export function parseModelRef(model: string): { provider: string; modelId: string } | null {
+	if (model === "") return null;
+	const parts = model.split("/");
+	if (parts.length !== 2) return null;
+	const [provider, modelId] = parts.map((part) => part.trim());
+	if (!provider || !modelId) return null;
+	return { provider, modelId };
+}
+
+export function isCursorModel(model: string): boolean {
+	return parseModelRef(model)?.provider.toLowerCase() === "cursor";
+}
+
 /** Max tool rows shown in collapsed subagent progress; ctrl+o shows all. */
 export const MAX_TOOLS_COLLAPSED = 15;
 
@@ -75,8 +90,4 @@ export interface SubagentDetails {
 
 export interface ExtensionConfig {
 	maxConcurrency?: number;
-	/** Trust project-local .pi/agents discovered from cwd. Default: false. */
-	allowProjectAgents?: boolean;
-	/** Allow trusted project agents to replace built-in agent/reviewer. Default: false. */
-	allowProjectAgentOverrides?: boolean;
 }

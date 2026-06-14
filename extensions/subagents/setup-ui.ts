@@ -22,9 +22,8 @@ import {
 	canEditSkills,
 	draftFromAgent,
 	mergeSelectedWithMissing,
+	persistAgentDraft,
 	splitResolvableAllowlist,
-	validateDraft,
-	writeAgentConfig,
 	type AgentConfigPatch,
 } from "./agent-io.ts";
 import {
@@ -40,9 +39,9 @@ import {
 	discoverSelectableToolNames,
 	type NamedResourceOption,
 } from "./resolve-tools.ts";
-import type { AgentConfig } from "./types.ts";
+import { THINKING_LEVELS, type AgentConfig } from "./types.ts";
 
-const THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+const INHERIT_THINKING_LABEL = "inherit current";
 const RELOAD_HINT = "Run /reload to apply changes.";
 const OVERLAY_WIDTH = 72;
 const OVERLAY_MAX_HEIGHT = 26;
@@ -82,7 +81,7 @@ function sourceLabel(source: AgentConfig["source"]): string {
 
 function agentSummary(agent: AgentConfig, uiConfig: SubagentsUiConfig): string {
 	const spawn = isAgentSpawnEnabled(agent.name, uiConfig) ? "spawnable" : "spawn disabled";
-	return `${sourceLabel(agent.source)} · ${agent.model} · ${agent.thinking} · ${spawn}`;
+	return `${sourceLabel(agent.source)} · ${displayModelValue(agent.model)} · ${displayThinkingValue(agent.thinking)} · ${spawn}`;
 }
 
 function pathBasename(filePath: string): string {
@@ -106,18 +105,20 @@ function allowlistSummary(names: string[], options: NamedResourceOption[]): stri
 	return missing > 0 ? `${selected} · ${missing} missing` : selected;
 }
 
-function saveAgentDraft(agent: AgentConfig, draft: AgentConfigPatch): string | null {
-	const error = validateDraft(agent, draft);
-	if (error) return error;
-	const patch: AgentConfigPatch = {};
-	if (draft.tools !== undefined) patch.tools = draft.tools;
-	if (draft.extensions !== undefined) patch.extensions = draft.extensions;
-	if (draft.skills !== undefined) patch.skills = draft.skills;
-	if (draft.model) patch.model = draft.model;
-	if (draft.thinking) patch.thinking = draft.thinking;
-	if (Object.keys(patch).length === 0) return "No changes to save.";
-	writeAgentConfig(agent.filePath, patch);
-	return null;
+export function displayModelValue(model: string | undefined): string {
+	return model ? model : "inherit current";
+}
+
+export function displayThinkingValue(thinking: string | undefined): string {
+	return thinking ? thinking : INHERIT_THINKING_LABEL;
+}
+
+function draftValue<T extends keyof AgentConfigPatch>(agent: AgentConfig, draft: AgentConfigPatch, key: T): AgentConfigPatch[T] {
+	return Object.hasOwn(draft, key) ? draft[key] : (agent[key as keyof AgentConfig] as AgentConfigPatch[T]);
+}
+
+function saveAgentDraft(cwd: string, agent: AgentConfig, draft: AgentConfigPatch): string | null {
+	return persistAgentDraft(cwd, agent, draft);
 }
 
 function buildModelRows(modelRegistry: ExtensionContext["modelRegistry"]): ModelRow[] {
@@ -233,12 +234,12 @@ function buildAllowlistPicker(args: {
 export async function showSubagentsSetup(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
-	extensionConfig: { allowProjectAgents?: boolean; allowProjectAgentOverrides?: boolean },
 ): Promise<SetupResult> {
-	const fileAgents = discoverFileAgents(ctx.cwd, {
-		allowProjectAgents: extensionConfig.allowProjectAgents,
-		allowProjectAgentOverrides: extensionConfig.allowProjectAgentOverrides,
-	}).filter((agent) => agent.source !== "dynamic");
+	let fileAgents: AgentConfig[] = [];
+	const refreshFileAgents = () => {
+		fileAgents = discoverFileAgents(ctx.cwd).filter((agent) => agent.source !== "dynamic");
+	};
+	refreshFileAgents();
 
 	if (fileAgents.length === 0) {
 		ctx.ui.notify("No subagent definitions found to configure.", "warning");
@@ -411,19 +412,19 @@ export async function showSubagentsSetup(
 					{
 						id: "model",
 						label: "Model",
-						currentValue: entry.patch.model ?? agent.model,
+						currentValue: displayModelValue(draftValue(agent, entry.patch, "model")),
 						values: ["open"],
 					},
 					{
 						id: "thinking",
 						label: "Thinking",
-						currentValue: entry.patch.thinking ?? agent.thinking,
-						values: [...THINKING_LEVELS],
+						currentValue: displayThinkingValue(draftValue(agent, entry.patch, "thinking")),
+						values: [INHERIT_THINKING_LABEL, ...THINKING_LEVELS],
 					},
 					{
 						id: "save",
 						label: "Save",
-						description: `${pathBasename(agent.filePath)} · ${RELOAD_HINT}`,
+						description: `${agent.source === "project" ? pathBasename(agent.filePath) : `.pi/kumpul/agens/${agent.name}.md`} · ${RELOAD_HINT}`,
 						currentValue: entry.dirty ? "save changes" : "up to date",
 						values: ["save changes", "up to date"],
 					},
@@ -463,7 +464,7 @@ export async function showSubagentsSetup(
 							return;
 						}
 						if (id === "thinking") {
-							entry.patch.thinking = newValue;
+							entry.patch.thinking = newValue === INHERIT_THINKING_LABEL ? "" : newValue;
 							entry.dirty = true;
 							list.updateValue("thinking", newValue);
 							list.updateValue("save", "save changes");
@@ -471,32 +472,22 @@ export async function showSubagentsSetup(
 							return;
 						}
 						if (id === "save" && newValue === "save changes" && entry.dirty) {
-							const error = saveAgentDraft(agent, entry.patch);
+							const error = saveAgentDraft(ctx.cwd, agent, entry.patch);
 							if (error) {
 								ctx.ui.notify(error, "error");
 								return;
 							}
 							entry.dirty = false;
 							saved = true;
-							loadAgents(ctx.cwd, {
-								allowProjectAgents: extensionConfig.allowProjectAgents,
-								allowProjectAgentOverrides: extensionConfig.allowProjectAgentOverrides,
-							});
-							const refreshed = discoverFileAgents(ctx.cwd, {
-								allowProjectAgents: extensionConfig.allowProjectAgents,
-								allowProjectAgentOverrides: extensionConfig.allowProjectAgentOverrides,
-							}).find((a) => a.name === agent.name);
+							loadAgents(ctx.cwd);
+							refreshFileAgents();
+							const refreshed = fileAgents.find((a) => a.name === agent.name);
 							if (refreshed) {
 								drafts.set(agent.name, { patch: draftFromAgent(refreshed), dirty: false });
-							}
-							list.updateValue("save", "up to date");
-							list.updateValue("model", entry.patch.model ?? agent.model);
-							list.updateValue("tools", `${(entry.patch.tools ?? agent.tools).length} selected`);
-							list.updateValue("extensions", allowlistSummary(entry.patch.extensions ?? agent.extensions ?? [], extensionOptions));
-							if (skillsEditable) {
-								list.updateValue("skills", allowlistSummary(entry.patch.skills ?? agent.skills ?? [], skillOptions));
+								screenStack[screenStack.length - 1] = { type: "agent", agent: refreshed };
 							}
 							ctx.ui.notify(`Saved ${agent.name}. ${RELOAD_HINT}`, "info");
+							rebuild();
 							tui.requestRender();
 						}
 					},
@@ -608,12 +599,14 @@ export async function showSubagentsSetup(
 				const entry = getDraft(agent);
 				const modelRows = buildModelRows(ctx.modelRegistry);
 				const currentKey = entry.patch.model ?? agent.model;
+				let selectedValue = currentKey;
 
-				let filteredRows = modelRows;
+				const rowsWithInherit = [{ key: "", label: "inherit current", description: "main agent model" }, ...modelRows];
+				let filteredRows = rowsWithInherit;
 				const toSelectItems = (rows: ModelRow[]): SelectItem[] =>
 					rows.map((row) => ({
 						value: row.key,
-						label: row.key,
+						label: row.key || row.label,
 						description: row.description,
 					}));
 
@@ -628,6 +621,7 @@ export async function showSubagentsSetup(
 				if (currentIndex >= 0) selectList.setSelectedIndex(currentIndex);
 
 				selectList.onSelect = (item) => {
+					selectedValue = item.value;
 					entry.patch.model = item.value;
 					entry.dirty = true;
 					popScreen();
@@ -637,17 +631,18 @@ export async function showSubagentsSetup(
 				const searchInput = new Input();
 				const applyFilter = (query: string) => {
 					filteredRows = query
-						? fuzzyFilter(modelRows, query, (row) => `${row.key} ${row.label} ${row.description}`)
-						: modelRows;
+						? fuzzyFilter(rowsWithInherit, query, (row) => `${row.key} ${row.label} ${row.description}`)
+						: rowsWithInherit;
 					selectList = new SelectList(
 						toSelectItems(filteredRows),
 						Math.min(LIST_VISIBLE, Math.max(1, filteredRows.length)),
 						getSelectListTheme(),
 						{ minPrimaryColumnWidth: 20, maxPrimaryColumnWidth: 44 },
 					);
-					const idx = filteredRows.findIndex((row) => row.key === currentKey);
+					const idx = filteredRows.findIndex((row) => row.key === selectedValue);
 					if (idx >= 0) selectList.setSelectedIndex(idx);
 					selectList.onSelect = (item) => {
+						selectedValue = item.value;
 						entry.patch.model = item.value;
 						entry.dirty = true;
 						popScreen();
@@ -660,6 +655,7 @@ export async function showSubagentsSetup(
 				searchInput.onSubmit = () => {
 					const item = selectList.getSelectedItem();
 					if (item) {
+						selectedValue = item.value;
 						entry.patch.model = item.value;
 						entry.dirty = true;
 						popScreen();

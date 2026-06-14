@@ -6,8 +6,8 @@ Isolated child `pi` processes with live TUI progress (tool log, nested children,
 
 | Agent | Tools | Purpose |
 |-------|-------|---------|
-| **agent** | read, write, edit, safe_bash, find_docs, fetch_content, subagent | Implement and run commands; may spawn **reviewer** only |
-| **reviewer** | read, grep, find, ls | Read-only code review |
+| **agent** | read, write, edit, safe_bash, find_docs, fetch_content | General-purpose implementer prompt; model/thinking inherit from parent |
+| **reviewer** | read, find, ls, find_docs, fetch_content | Read-only code review prompt; model/thinking inherit from parent |
 
 ## Usage
 
@@ -37,11 +37,11 @@ Add markdown with YAML frontmatter:
 |----------|--------|
 | `extensions/subagents/agents/` | Shipped with kumpul (override by name below) |
 | `~/.pi/agent/agents/` | Global |
-| `.pi/agents/` | Project (nearest walk-up from cwd; disabled by default) |
+| `.pi/kumpul/agens/` | Project overrides (nearest walk-up from cwd) |
 
-Project agents are a trust boundary: set `allowProjectAgents: true` in `extensions/subagents/config.json` before loading them. Even then, project agents cannot override the built-in privileged `agent` or `reviewer` unless `allowProjectAgentOverrides: true` is also set.
+Project agents in `.pi/kumpul/agens/` are loaded automatically and override package/global agents by name. The `/subagents` setup UI writes changes there, so package defaults stay unchanged.
 
-Required frontmatter: `name`, `description`, `tools`; optional frontmatter: `model`, `thinking`, `subagent_agents`, `extensions`, `skills`. Invalid files are skipped with a diagnostic. `tools` and `subagent_agents` must be comma-separated tool-safe identifiers; `extensions` and `skills` must be comma-separated canonical names (`lower-kebab-case`); `model` must be `provider/model`; `thinking` must be one of `minimal`, `low`, `medium`, `high`, `xhigh`.
+Required frontmatter: `name`, `description`, `tools`; optional frontmatter: `model`, `thinking`, `subagent_agents`, `extensions`, `skills`. Invalid files are skipped with a diagnostic. `tools` and `subagent_agents` must be comma-separated tool-safe identifiers; `extensions` and `skills` must be comma-separated canonical names (`lower-kebab-case`); `model` must be empty or `provider/model`; empty `model` inherits the parent agent's current model; `thinking` must be empty or one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`; empty `thinking` inherits the parent thinking level.
 
 Child spawns keep discovery disabled with `--no-extensions` and `--no-skills`. Use `extensions` as an explicit allowlist of extension names to load by name, not path:
 
@@ -85,7 +85,7 @@ Unresolved tools, extension names, and skill names fail fast instead of being si
 
 ## UI
 
-`/subagents` — centered overlay to enable/disable the extension, toggle per-agent spawn, and edit **tools**, **extensions**, **skills**, **model**, and **thinking** on existing agent `.md` files (including package builtins). Changes apply after `/reload`.
+`/subagents` — centered overlay to enable/disable the extension, toggle per-agent spawn, and edit **tools**, **extensions**, **skills**, **model**, and **thinking**. Edits to package/global agents are saved as project overrides under `.pi/kumpul/agens/<agent>.md`; existing project agents are edited in place. Changes apply after `/reload`.
 
 Extension and skill pickers show only currently resolvable names with source labels (`project`, `loaded`, `package`, `global`, `npm`). Missing saved names are warned about and preserved on save; remove them manually from the `.md` file. Skills are editable only when `read` is enabled, and `read` stays locked while skills are selected.
 

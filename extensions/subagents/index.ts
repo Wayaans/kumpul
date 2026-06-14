@@ -14,9 +14,9 @@ import {
 	renderSubagentCall,
 	renderSubagentResult,
 } from "./render.ts";
-import { formatDuration, formatSubagentFailure, runSubagent, Semaphore } from "./spawn.ts";
+import { formatDuration, formatSubagentFailure, resolveEffectiveAgent, runSubagent, Semaphore } from "./spawn.ts";
 import { collectNamedExtensionPaths, collectSkillPaths, collectToolExtensionPaths } from "./resolve-tools.ts";
-import type { AgentResult, ExtensionConfig, SubagentDetails } from "./types.ts";
+import { parseModelRef, type AgentResult, type ExtensionConfig, type SubagentDetails } from "./types.ts";
 
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
 const CONFIG_PATH = path.join(EXTENSION_DIR, "config.json");
@@ -44,16 +44,6 @@ export function parseConfig(raw: unknown): ExtensionConfig {
 		}
 		config.maxConcurrency = obj.maxConcurrency;
 	}
-	if (obj.allowProjectAgents !== undefined) {
-		if (typeof obj.allowProjectAgents !== "boolean") throw new Error("subagents config allowProjectAgents must be a boolean");
-		config.allowProjectAgents = obj.allowProjectAgents;
-	}
-	if (obj.allowProjectAgentOverrides !== undefined) {
-		if (typeof obj.allowProjectAgentOverrides !== "boolean") {
-			throw new Error("subagents config allowProjectAgentOverrides must be a boolean");
-		}
-		config.allowProjectAgentOverrides = obj.allowProjectAgentOverrides;
-	}
 	return config;
 }
 
@@ -72,18 +62,12 @@ export default function (pi: ExtensionAPI): void {
 	const config = loadConfig();
 	const semaphore = new Semaphore(config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
 
-	loadAgents(process.cwd(), {
-		allowProjectAgents: config.allowProjectAgents,
-		allowProjectAgentOverrides: config.allowProjectAgentOverrides,
-	});
+	loadAgents(process.cwd());
 
 	pi.registerCommand("subagents", {
 		description: "Configure subagents (extension, spawn, tools, model, thinking)",
 		handler: async (_args, ctx) => {
-			await showSubagentsSetup(pi, ctx, {
-				allowProjectAgents: config.allowProjectAgents,
-				allowProjectAgentOverrides: config.allowProjectAgentOverrides,
-			});
+			await showSubagentsSetup(pi, ctx);
 		},
 	});
 
@@ -114,10 +98,7 @@ export default function (pi: ExtensionAPI): void {
 
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const cwd = sanitizeDiscoveryCwd(params.cwd ?? ctx.cwd);
-			loadAgents(cwd, {
-				allowProjectAgents: config.allowProjectAgents,
-				allowProjectAgentOverrides: config.allowProjectAgentOverrides,
-			});
+			loadAgents(cwd);
 
 			if (!params.agent || !params.task) {
 				throw new Error(
@@ -142,9 +123,15 @@ export default function (pi: ExtensionAPI): void {
 
 			const alias = normalizeSubagentAlias(params.alias);
 
-			const [provider, modelId] = (agent.model || "").split("/");
-			const contextWindow =
-				provider && modelId ? ctx.modelRegistry.find(provider, modelId)?.contextWindow : undefined;
+			const inherited = {
+				model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "",
+				thinking: agent.thinking ? "" : pi.getThinkingLevel(),
+			};
+			const effectiveAgent = resolveEffectiveAgent(agent, inherited);
+			const modelRef = parseModelRef(effectiveAgent.model);
+			const contextWindow = modelRef
+				? ctx.modelRegistry.find(modelRef.provider, modelRef.modelId)?.contextWindow
+				: undefined;
 
 			const liveResult: AgentResult = {
 				agent: params.agent,
@@ -152,7 +139,7 @@ export default function (pi: ExtensionAPI): void {
 				task: params.task,
 				output: "",
 				exitCode: -1,
-				model: agent.model,
+				model: effectiveAgent.model,
 				contextWindow,
 				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 				progress: {
@@ -175,7 +162,7 @@ export default function (pi: ExtensionAPI): void {
 			const skillPaths = collectSkillPaths(commands);
 			const result = await semaphore.run(() =>
 				runSubagent(
-					agent,
+					effectiveAgent,
 					params.task,
 					cwd,
 					signal,
@@ -204,7 +191,7 @@ export default function (pi: ExtensionAPI): void {
 					toolExtensionPaths,
 					skillPaths,
 					extensionNamePaths,
-					{ alias },
+					{ alias, inherited },
 				),
 			);
 
