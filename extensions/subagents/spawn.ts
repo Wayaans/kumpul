@@ -214,7 +214,10 @@ export async function buildPiArgs(
 		args.push("--skill", skillPath);
 	}
 
-	if (agent.model) args.push("--model", agent.model);
+	if (agent.model) {
+		args.push("--models", agent.model);
+		args.push("--model", agent.model);
+	}
 	if (agent.thinking) args.push("--thinking", agent.thinking);
 	args.push("--append-system-prompt", promptPath);
 

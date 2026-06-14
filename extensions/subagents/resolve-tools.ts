@@ -347,7 +347,12 @@ function addSkillOptionsFromDir(
 	if (!fs.existsSync(baseDir)) return;
 	for (const entry of fs.readdirSync(baseDir)) {
 		const entryPath = path.join(baseDir, entry);
-		const stat = fs.statSync(entryPath);
+		let stat: fs.Stats;
+		try {
+			stat = fs.statSync(entryPath);
+		} catch {
+			continue;
+		}
 		if (stat.isDirectory()) addOption(options, entry, path.join(entryPath, "SKILL.md"), source);
 		else if (stat.isFile() && entry.endsWith(".md")) addOption(options, path.basename(entry, ".md"), entryPath, source);
 	}

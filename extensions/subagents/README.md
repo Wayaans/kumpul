@@ -41,7 +41,7 @@ Add markdown with YAML frontmatter:
 
 Project agents in `.pi/kumpul/agens/` are loaded automatically and override package/global agents by name. The `/subagents` setup UI writes changes there, so package defaults stay unchanged.
 
-Required frontmatter: `name`, `description`, `tools`; optional frontmatter: `model`, `thinking`, `subagent_agents`, `extensions`, `skills`. Invalid files are skipped with a diagnostic. `tools` and `subagent_agents` must be comma-separated tool-safe identifiers; `extensions` and `skills` must be comma-separated canonical names (`lower-kebab-case`); `model` must be empty or `provider/model`; empty `model` inherits the parent agent's current model; `thinking` must be empty or one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`; empty `thinking` inherits the parent thinking level.
+Required frontmatter: `name`, `description`, `tools`; optional frontmatter: `model`, `thinking`, `subagent_agents`, `extensions`, `skills`. Invalid files are skipped with a diagnostic. `tools` and `subagent_agents` must be comma-separated tool-safe identifiers; `extensions` and `skills` must be comma-separated canonical names (`lower-kebab-case`); `model` must be empty or `provider/model`; empty `model` inherits the parent agent's current model; `thinking` must be empty or one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`; empty `thinking` inherits the parent thinking level. The child receives its effective model as both active `--model` and child `--models` scope so global model cycling settings do not leak unrelated provider warnings into subagent runs.
 
 Child spawns keep discovery disabled with `--no-extensions` and `--no-skills`. Use `extensions` as an explicit allowlist of extension names to load by name, not path:
 

@@ -309,18 +309,21 @@ test("parseCursorThinkingActivity maps Cursor SDK replay lines", () => {
 	assert.equal(parseCursorThinkingActivity("I will read spawn.ts."), undefined);
 });
 
-test("buildPiArgs passes --model from agent frontmatter (not --models cycling scope)", async () => {
+test("buildPiArgs pins child model scope to the agent frontmatter model", async () => {
 	const agent = testAgent({ model: "openai-codex/gpt-5.4-mini", tools: ["read"] });
 	const { args } = await buildPiArgs(agent, "task");
 	const modelIdx = args.indexOf("--model");
+	const modelsIdx = args.indexOf("--models");
 	assert.ok(modelIdx >= 0, "expected --model flag");
+	assert.ok(modelsIdx >= 0, "expected --models flag");
 	assert.equal(args[modelIdx + 1], "openai-codex/gpt-5.4-mini");
-	assert.equal(args.indexOf("--models"), -1, "--models only scopes Ctrl+P cycling, not the active model");
+	assert.equal(args[modelsIdx + 1], "openai-codex/gpt-5.4-mini");
 });
 
-test("buildPiArgs omits --model and --thinking when agent values are empty", async () => {
+test("buildPiArgs omits --model, --models, and --thinking when agent values are empty", async () => {
 	const { args } = await buildPiArgs(testAgent({ model: "", thinking: "", tools: ["read"] }), "task");
 	assert.equal(args.indexOf("--model"), -1);
+	assert.equal(args.indexOf("--models"), -1);
 	assert.equal(args.indexOf("--thinking"), -1);
 });
 
@@ -731,6 +734,17 @@ test("discoverSelectableSkillOptions labels resolvable skill sources", () => {
 	assert.equal(options.some((option) => option.name === "missing-skill"), false);
 });
 
+test("discoverSelectableSkillOptions skips dangling project skill entries", () => {
+	const cwd = tempDir("kumpul-subagents-dangling-skill-option-");
+	const skillsDir = path.join(cwd, ".agents", "skills");
+	fs.mkdirSync(path.join(skillsDir, "valid-skill"), { recursive: true });
+	fs.writeFileSync(path.join(skillsDir, "valid-skill", "SKILL.md"), "---\nname: valid-skill\ndescription: Valid skill.\n---\n", "utf-8");
+	fs.symlinkSync(path.join(cwd, "missing-target"), path.join(skillsDir, "laravel-specialist"));
+
+	const options = discoverSelectableSkillOptions([], cwd);
+	assert.equal(options.find((option) => option.name === "valid-skill")?.source, "project");
+});
+
 test("discoverSelectableToolNames includes builtins, session tools, and kumpul extension tools", () => {
 	const names = discoverSelectableToolNames([
 		{ name: "custom_tool", label: "Custom", description: "", parameters: {} },
@@ -840,7 +854,7 @@ setInterval(() => {}, 1000);
 	}
 }));
 
-test("execute passes parent model when agent model is empty", async () => withoutSubagentAllowlistAsync(async () => {
+test("execute passes and scopes parent model when agent model is empty", async () => withoutSubagentAllowlistAsync(async () => {
 	const binDir = tempDir("kumpul-subagents-bin-");
 	const fakePi = path.join(binDir, "pi");
 	fs.writeFileSync(
@@ -849,6 +863,11 @@ test("execute passes parent model when agent model is empty", async () => withou
 const modelIdx = process.argv.indexOf("--model");
 if (modelIdx < 0 || process.argv[modelIdx + 1] !== "cursor/composer-2.5") {
   console.error("missing inherited model", JSON.stringify(process.argv));
+  process.exit(2);
+}
+const modelsIdx = process.argv.indexOf("--models");
+if (modelsIdx < 0 || process.argv[modelsIdx + 1] !== "cursor/composer-2.5") {
+  console.error("missing inherited model scope", JSON.stringify(process.argv));
   process.exit(2);
 }
 const thinkingIdx = process.argv.indexOf("--thinking");
