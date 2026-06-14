@@ -17,7 +17,6 @@ import {
 } from "./cursor-progress.ts";
 import {
 	BUILTIN_TOOLS,
-	resolveCursorProviderExtension,
 	resolveCustomToolExtension,
 	resolveNamedExtensions,
 	resolveNamedSkills,
@@ -169,16 +168,6 @@ export async function buildPiArgs(
 	const skillAllowlist = resolveNamedSkills(agent.skills, skillPaths, cwd);
 	if (skillAllowlist.unresolved.length > 0) {
 		throw new Error(`Unable to resolve skills for agent ${agent.name}: ${skillAllowlist.unresolved.join(", ")}`);
-	}
-
-	if (agent.model.startsWith("cursor/")) {
-		const cursorExt = resolveCursorProviderExtension();
-		if (!cursorExt) {
-			throw new Error(
-				`Unable to resolve cursor provider for agent ${agent.name}: pi-cursor-sdk is not installed (pi install npm:pi-cursor-sdk)`,
-			);
-		}
-		extensionPaths.add(cursorExt);
 	}
 
 	const piBin = resolvePiBinary();

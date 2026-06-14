@@ -30,11 +30,6 @@ const GLOBAL_NPM_NODE_MODULES = path.join(GLOBAL_AGENT_DIR, "npm", "node_modules
 const GLOBAL_SKILLS_DIR = path.join(GLOBAL_AGENT_DIR, "skills");
 const LEGACY_GLOBAL_SKILLS_DIR = path.join(process.env.HOME || "~", ".agents", "skills");
 
-const CURSOR_PROVIDER_CANDIDATES = [
-	path.join(GLOBAL_EXT_BASE, "pi-cursor-sdk", "index.ts"),
-	path.join(process.env.HOME || "~", ".pi", "agent", "npm", "node_modules", "pi-cursor-sdk", "src", "index.ts"),
-];
-
 export type ToolExtensionPaths = ReadonlyMap<string, string>;
 export type ExtensionNamePaths = ReadonlyMap<string, string>;
 export type SkillPaths = ReadonlyMap<string, string>;
@@ -85,15 +80,6 @@ export function collectSkillPaths(commands: CommandInfoLike[]): Map<string, stri
 		addIfMissing(result, command.name.slice("skill:".length), command.sourceInfo?.path);
 	}
 	return result;
-}
-
-/** Extension entry for pi-cursor-sdk (required when agent model is cursor/*). */
-export function resolveCursorProviderExtension(): string | undefined {
-	for (const candidate of CURSOR_PROVIDER_CANDIDATES) {
-		const resolved = existingFile(candidate);
-		if (resolved) return resolved;
-	}
-	return undefined;
 }
 
 /** Resolve extension entry path for a custom tool name. */

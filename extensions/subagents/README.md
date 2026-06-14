@@ -59,7 +59,14 @@ skills: diagnose, test-driven-development
 
 Skills resolve from project skills, currently loaded skill metadata, global skills, and this package. They are loaded with `--skill` so the child can use Pi's normal skill flow, but no skill is invoked at startup. Agents with `skills` must include `read` in `tools` so they can load full `SKILL.md` files on demand.
 
-`cursor/*` models require [pi-cursor-sdk](https://www.npmjs.com/package/pi-cursor-sdk) installed globally (`pi install npm:pi-cursor-sdk`). Child spawns load that provider via `--extension` while keeping `--no-extensions` for everything else.
+`cursor/*` models require a Cursor provider extension in `extensions`, for example [pi-cursor-sdk](https://www.npmjs.com/package/pi-cursor-sdk) installed globally (`pi install npm:pi-cursor-sdk`):
+
+```yaml
+extensions: pi-cursor-sdk
+model: cursor/composer-2.5
+```
+
+Child spawns do not auto-load Cursor providers; they use the same explicit extension allowlist path as any other extension.
 
 Live progress for `cursor/*` subagents is derived from Cursor SDK `thinking_*` replay in JSON mode (not `tool_execution_*`, which only native pi tool runs emit). OpenAI/Codex models still use `tool_execution_*`. Cursor may batch replay until a tool finishes; the parent UI heartbeats every 1s so duration and counters tick without excessive re-renders.
 

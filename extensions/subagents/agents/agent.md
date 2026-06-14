@@ -2,6 +2,7 @@
 name: agent
 description: General-purpose implementer — reads, writes, edits, and runs commands
 tools: edit, fetch_content, find, find_docs, grep, ls, read, safe_bash, write
+extensions: pi-cursor-sdk
 model: cursor/composer-2.5
 thinking: high
 ---

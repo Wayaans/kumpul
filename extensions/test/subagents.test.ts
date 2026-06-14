@@ -14,7 +14,6 @@ import {
 	collectNamedExtensionPaths,
 	discoverInstalledExtensionToolNames,
 	discoverSelectableToolNames,
-	resolveCursorProviderExtension,
 	resolveCustomToolExtension,
 	resolveNamedExtension,
 } from "../subagents/resolve-tools.ts";
@@ -225,7 +224,9 @@ test("discoverFileAgents includes package builtins", () => withoutSubagentAllowl
 	const names = agents.map((a) => a.name);
 	assert.ok(names.includes("agent"));
 	assert.ok(names.includes("reviewer"));
-	assert.equal(agents.find((a) => a.name === "agent")?.source, "package");
+	const agent = agents.find((a) => a.name === "agent");
+	assert.equal(agent?.source, "package");
+	assert.deepEqual(agent?.extensions, ["pi-cursor-sdk"]);
 }));
 
 test("project agents are disabled by default and cannot override privileged agents without opt-in", () => withoutSubagentAllowlist(() => {
@@ -453,12 +454,7 @@ test("buildPiArgs passes --model from agent frontmatter (not --models cycling sc
 	assert.equal(args.indexOf("--models"), -1, "--models only scopes Ctrl+P cycling, not the active model");
 });
 
-test("buildPiArgs injects pi-cursor-sdk for cursor/* models", async (t) => {
-	const cursorExt = resolveCursorProviderExtension();
-	if (!cursorExt) {
-		t.skip("pi-cursor-sdk not installed");
-		return;
-	}
+test("buildPiArgs does not inject pi-cursor-sdk for cursor/* models", async () => {
 	const agent = testAgent({ model: "cursor/composer-2.5", tools: ["read"] });
 	const { args } = await buildPiArgs(agent, "task");
 	assert.equal(args[args.indexOf("--model") + 1], "cursor/composer-2.5");
@@ -466,21 +462,17 @@ test("buildPiArgs injects pi-cursor-sdk for cursor/* models", async (t) => {
 	for (let i = 0; i < args.length; i++) {
 		if (args[i] === "--extension") extensionPaths.push(args[i + 1]!);
 	}
-	assert.ok(
-		extensionPaths.some((p) => p.includes("pi-cursor-sdk")),
-		"expected pi-cursor-sdk --extension",
-	);
+	assert.equal(extensionPaths.some((p) => p.includes("pi-cursor-sdk")), false);
 });
 
-test("buildPiArgs fails fast for cursor/* when pi-cursor-sdk is missing", async (t) => {
-	if (resolveCursorProviderExtension()) {
-		t.skip("pi-cursor-sdk is installed");
-		return;
+test("buildPiArgs loads pi-cursor-sdk from the explicit extension allowlist", async () => {
+	const agent = testAgent({ model: "cursor/composer-2.5", tools: ["read"], extensions: ["pi-cursor-sdk"] });
+	const { args } = await buildPiArgs(agent, "task");
+	const extensionPaths: string[] = [];
+	for (let i = 0; i < args.length; i++) {
+		if (args[i] === "--extension") extensionPaths.push(args[i + 1]!);
 	}
-	await assert.rejects(
-		buildPiArgs(testAgent({ model: "cursor/composer-2.5", tools: ["read"] }), "task"),
-		/pi-cursor-sdk/,
-	);
+	assert.ok(extensionPaths.some((p) => p.includes("pi-cursor-sdk")), "expected pi-cursor-sdk --extension");
 });
 
 test("subagent depth env rejects spawning beyond max depth", async () => {
