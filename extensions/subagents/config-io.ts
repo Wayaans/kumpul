@@ -105,12 +105,16 @@ function extractConfig(document: unknown): Partial<SubagentsUiConfig> {
 
 const DEFAULTS: SubagentsUiConfig = { enabled: true, disabledAgents: new Set() };
 
+function cloneDisabledAgents(disabledAgents: Set<string> | undefined): Set<string> {
+	return new Set(disabledAgents ?? DEFAULTS.disabledAgents);
+}
+
 export function loadMergedSubagentsUiConfig(cwd: string): SubagentsUiConfig {
 	const fromDefault = extractConfig(readYamlFile(getDefaultConfigPath()));
 	const fromProject = extractConfig(readYamlFile(getProjectConfigPath(cwd)));
 	return {
 		enabled: fromProject.enabled ?? fromDefault.enabled ?? DEFAULTS.enabled,
-		disabledAgents: fromProject.disabledAgents ?? fromDefault.disabledAgents ?? DEFAULTS.disabledAgents,
+		disabledAgents: cloneDisabledAgents(fromProject.disabledAgents ?? fromDefault.disabledAgents),
 	};
 }
 
@@ -121,7 +125,7 @@ export function updateProjectSubagentsUiConfig(
 	const current = loadMergedSubagentsUiConfig(cwd);
 	const saved: SubagentsUiConfig = {
 		enabled: patch.enabled ?? current.enabled,
-		disabledAgents: patch.disabledAgents ?? current.disabledAgents,
+		disabledAgents: cloneDisabledAgents(patch.disabledAgents ?? current.disabledAgents),
 	};
 	const configPath = getProjectConfigPath(cwd);
 	const nextDocument = mergeSubagentsConfig(readYamlFile(configPath), saved);

@@ -19,7 +19,10 @@ import {
 	matchesKey,
 } from "@earendil-works/pi-tui";
 import {
+	canEditSkills,
 	draftFromAgent,
+	mergeSelectedWithMissing,
+	splitResolvableAllowlist,
 	validateDraft,
 	writeAgentConfig,
 	type AgentConfigPatch,
@@ -31,7 +34,12 @@ import {
 	type SubagentsUiConfig,
 } from "./config-io.ts";
 import { discoverFileAgents, loadAgents } from "./registry.ts";
-import { discoverSelectableToolNames } from "./resolve-tools.ts";
+import {
+	discoverSelectableExtensionOptions,
+	discoverSelectableSkillOptions,
+	discoverSelectableToolNames,
+	type NamedResourceOption,
+} from "./resolve-tools.ts";
 import type { AgentConfig } from "./types.ts";
 
 const THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh"] as const;
@@ -49,6 +57,8 @@ type Screen =
 	| { type: "home" }
 	| { type: "agent"; agent: AgentConfig }
 	| { type: "tools"; agent: AgentConfig }
+	| { type: "extensions"; agent: AgentConfig }
+	| { type: "skills"; agent: AgentConfig }
 	| { type: "model"; agent: AgentConfig };
 
 interface ModelRow {
@@ -80,11 +90,29 @@ function pathBasename(filePath: string): string {
 	return parts[parts.length - 1] ?? filePath;
 }
 
+type AllowlistKey = "extensions" | "skills";
+
+function draftAllowlist(agent: AgentConfig, draft: AgentConfigPatch, key: AllowlistKey): string[] {
+	return draft[key] ?? agent[key] ?? [];
+}
+
+function missingAllowlistNames(names: string[], options: NamedResourceOption[]): string[] {
+	return splitResolvableAllowlist(names, options.map((option) => option.name)).missing;
+}
+
+function allowlistSummary(names: string[], options: NamedResourceOption[]): string {
+	const missing = missingAllowlistNames(names, options).length;
+	const selected = names.length === 1 ? "1 selected" : `${names.length} selected`;
+	return missing > 0 ? `${selected} · ${missing} missing` : selected;
+}
+
 function saveAgentDraft(agent: AgentConfig, draft: AgentConfigPatch): string | null {
 	const error = validateDraft(agent, draft);
 	if (error) return error;
 	const patch: AgentConfigPatch = {};
-	if (draft.tools) patch.tools = draft.tools;
+	if (draft.tools !== undefined) patch.tools = draft.tools;
+	if (draft.extensions !== undefined) patch.extensions = draft.extensions;
+	if (draft.skills !== undefined) patch.skills = draft.skills;
 	if (draft.model) patch.model = draft.model;
 	if (draft.thinking) patch.thinking = draft.thinking;
 	if (Object.keys(patch).length === 0) return "No changes to save.";
@@ -120,6 +148,86 @@ function compactShell(
 	shell.addChild(new Text(`  ${theme.fg("dim", hint)}`));
 	shell.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
 	return shell;
+}
+
+function buildAllowlistPicker(args: {
+	theme: Theme;
+	title: string;
+	resourceName: AllowlistKey;
+	options: NamedResourceOption[];
+	current: string[];
+	onChange(names: string[]): void;
+	onCancel(): void;
+	requestRender(): void;
+}): { shell: Component; inputTarget: { handleInput(data: string): void; invalidate(): void } } {
+	const optionNames = args.options.map((option) => option.name);
+	const selectionState = splitResolvableAllowlist(args.current, optionNames);
+	const selected = new Set(selectionState.selected);
+	const missing = selectionState.missing;
+
+	if (args.options.length === 0) {
+		const body = new Container();
+		if (missing.length > 0) {
+			body.addChild(new Text(`  ${args.theme.fg("warning", `Missing names preserved: ${missing.join(", ")}`)}`));
+		}
+		body.addChild(new Text(`  ${args.theme.fg("muted", `No resolvable ${args.resourceName} found.`)}`));
+		return {
+			shell: compactShell(args.theme, args.title, "0 resolvable", body, "esc back"),
+			inputTarget: {
+				handleInput(data: string) {
+					if (matchesKey(data, Key.escape)) args.onCancel();
+				},
+				invalidate() {
+					body.invalidate();
+				},
+			},
+		};
+	}
+
+	const items: SettingItem[] = args.options.map((option) => ({
+		id: option.name,
+		label: option.name,
+		description: option.source,
+		currentValue: selected.has(option.name) ? "enabled" : "disabled",
+		values: ["enabled", "disabled"],
+	}));
+
+	const list = new SettingsList(
+		items,
+		Math.min(items.length, LIST_VISIBLE),
+		getSettingsListTheme(),
+		(id, newValue) => {
+			if (newValue === "enabled") selected.add(id);
+			else selected.delete(id);
+			args.onChange(
+				mergeSelectedWithMissing(
+					[...selected].sort((a, b) => a.localeCompare(b)),
+					args.current,
+					optionNames,
+				),
+			);
+			args.requestRender();
+		},
+		args.onCancel,
+		{ enableSearch: true },
+	);
+
+	const body = new Container();
+	if (missing.length > 0) {
+		body.addChild(new Text(`  ${args.theme.fg("warning", `Missing names preserved: ${missing.join(", ")}`)}`));
+	}
+	body.addChild(list);
+
+	return {
+		shell: compactShell(
+			args.theme,
+			args.title,
+			`${args.options.length} resolvable · ${missing.length} missing`,
+			body,
+			"type to search · space toggle · esc back",
+		),
+		inputTarget: list,
+	};
 }
 
 export async function showSubagentsSetup(
@@ -189,6 +297,10 @@ export async function showSubagentsSetup(
 						return buildAgentScreen(screen.agent);
 					case "tools":
 						return buildToolsScreen(screen.agent);
+					case "extensions":
+						return buildResourceScreen(screen.agent, "extensions");
+					case "skills":
+						return buildResourceScreen(screen.agent, "skills");
 					case "model":
 						return buildModelScreen(screen.agent);
 				}
@@ -253,6 +365,15 @@ export async function showSubagentsSetup(
 			const buildAgentScreen = (agent: AgentConfig) => {
 				const entry = getDraft(agent);
 				const spawnEnabled = !uiConfig.disabledAgents.has(agent.name);
+				const commands = pi.getCommands();
+				const extensionOptions = discoverSelectableExtensionOptions(pi.getAllTools(), commands, ctx.cwd);
+				const skillOptions = discoverSelectableSkillOptions(commands, ctx.cwd);
+				const currentTools = entry.patch.tools ?? agent.tools;
+				const currentExtensions = draftAllowlist(agent, entry.patch, "extensions");
+				const currentSkills = draftAllowlist(agent, entry.patch, "skills");
+				const missingExtensions = missingAllowlistNames(currentExtensions, extensionOptions);
+				const missingSkills = missingAllowlistNames(currentSkills, skillOptions);
+				const skillsEditable = canEditSkills(currentTools);
 
 				const items: SettingItem[] = [
 					{
@@ -269,6 +390,24 @@ export async function showSubagentsSetup(
 						currentValue: `${(entry.patch.tools ?? agent.tools).length} selected`,
 						values: ["open"],
 					},
+					{
+						id: "extensions",
+						label: "Extensions",
+						description: "Explicit child extension allowlist; tools stay separate.",
+						currentValue: allowlistSummary(currentExtensions, extensionOptions),
+						values: ["open"],
+					},
+					...(skillsEditable
+						? [
+							{
+								id: "skills",
+								label: "Skills",
+								description: "Explicit child skill allowlist.",
+								currentValue: allowlistSummary(currentSkills, skillOptions),
+								values: ["open"],
+							},
+						]
+						: []),
 					{
 						id: "model",
 						label: "Model",
@@ -311,6 +450,14 @@ export async function showSubagentsSetup(
 							pushScreen({ type: "tools", agent });
 							return;
 						}
+						if (id === "extensions") {
+							pushScreen({ type: "extensions", agent });
+							return;
+						}
+						if (id === "skills") {
+							pushScreen({ type: "skills", agent });
+							return;
+						}
 						if (id === "model") {
 							pushScreen({ type: "model", agent });
 							return;
@@ -345,6 +492,10 @@ export async function showSubagentsSetup(
 							list.updateValue("save", "up to date");
 							list.updateValue("model", entry.patch.model ?? agent.model);
 							list.updateValue("tools", `${(entry.patch.tools ?? agent.tools).length} selected`);
+							list.updateValue("extensions", allowlistSummary(entry.patch.extensions ?? agent.extensions ?? [], extensionOptions));
+							if (skillsEditable) {
+								list.updateValue("skills", allowlistSummary(entry.patch.skills ?? agent.skills ?? [], skillOptions));
+							}
 							ctx.ui.notify(`Saved ${agent.name}. ${RELOAD_HINT}`, "info");
 							tui.requestRender();
 						}
@@ -354,6 +505,15 @@ export async function showSubagentsSetup(
 
 				const body = new Container();
 				body.addChild(new Text(`  ${theme.fg("dim", agent.description)}`));
+				const warnings: string[] = [];
+				if (missingExtensions.length > 0) warnings.push(`extensions: ${missingExtensions.join(", ")}`);
+				if (missingSkills.length > 0) warnings.push(`skills: ${missingSkills.join(", ")}`);
+				if (warnings.length > 0) {
+					body.addChild(new Text(`  ${theme.fg("warning", `Missing allowlist names preserved · ${warnings.join(" · ")}`)}`));
+				}
+				if (!skillsEditable) {
+					body.addChild(new Text(`  ${theme.fg("muted", "Skills unavailable until read is enabled in Tools.")}`));
+				}
 				body.addChild(list);
 
 				return {
@@ -385,6 +545,19 @@ export async function showSubagentsSetup(
 					Math.min(items.length, LIST_VISIBLE),
 					getSettingsListTheme(),
 					(id, newValue) => {
+						const currentSkills = entry.patch.skills ?? agent.skills ?? [];
+						if (newValue === "disabled" && selected.size === 1 && selected.has(id)) {
+							list.updateValue(id, "enabled");
+							ctx.ui.notify("Agents need at least one tool.", "warning");
+							tui.requestRender();
+							return;
+						}
+						if (id === "read" && newValue === "disabled" && currentSkills.length > 0) {
+							list.updateValue("read", "enabled");
+							ctx.ui.notify("read is required while skills are selected.", "warning");
+							tui.requestRender();
+							return;
+						}
 						if (newValue === "enabled") selected.add(id);
 						else selected.delete(id);
 						entry.patch.tools = [...selected].sort((a, b) => a.localeCompare(b));
@@ -408,6 +581,27 @@ export async function showSubagentsSetup(
 					),
 					inputTarget: list,
 				};
+			};
+
+			const buildResourceScreen = (agent: AgentConfig, key: AllowlistKey) => {
+				const entry = getDraft(agent);
+				const options = key === "extensions"
+					? discoverSelectableExtensionOptions(pi.getAllTools(), pi.getCommands(), ctx.cwd)
+					: discoverSelectableSkillOptions(pi.getCommands(), ctx.cwd);
+				const current = draftAllowlist(agent, entry.patch, key);
+				return buildAllowlistPicker({
+					theme,
+					title: key === "extensions" ? "Extensions" : "Skills",
+					resourceName: key,
+					options,
+					current,
+					onChange(names) {
+						entry.patch[key] = names;
+						entry.dirty = true;
+					},
+					onCancel: popScreen,
+					requestRender: () => tui.requestRender(),
+				});
 			};
 
 			const buildModelScreen = (agent: AgentConfig) => {

@@ -33,15 +33,34 @@ const LEGACY_GLOBAL_SKILLS_DIR = path.join(process.env.HOME || "~", ".agents", "
 export type ToolExtensionPaths = ReadonlyMap<string, string>;
 export type ExtensionNamePaths = ReadonlyMap<string, string>;
 export type SkillPaths = ReadonlyMap<string, string>;
+export type ResourceSource = "project" | "loaded" | "package" | "global" | "npm";
+
+export interface NamedResourceOption {
+	name: string;
+	source: ResourceSource;
+	path: string;
+}
+
+interface SourceInfoLike {
+	path?: string;
+	source?: string;
+	scope?: string;
+	origin?: string;
+	baseDir?: string;
+}
 
 interface CommandInfoLike {
 	name: string;
 	source?: string;
-	sourceInfo?: { path?: string };
+	sourceInfo?: SourceInfoLike;
 }
 
 function existingFile(p: string | undefined): string | undefined {
 	return p && fs.existsSync(p) && fs.statSync(p).isFile() ? p : undefined;
+}
+
+function isCanonicalResourceName(name: string): boolean {
+	return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name);
 }
 
 function addIfMissing(map: Map<string, string>, name: string | undefined, filePath: string | undefined): void {
@@ -49,10 +68,27 @@ function addIfMissing(map: Map<string, string>, name: string | undefined, filePa
 	if (name && resolved && !map.has(name)) map.set(name, resolved);
 }
 
+function addOption(
+	options: Map<string, NamedResourceOption>,
+	name: string | undefined,
+	filePath: string | undefined,
+	source: ResourceSource,
+): void {
+	const resolved = existingFile(filePath);
+	if (name && isCanonicalResourceName(name) && resolved && !options.has(name)) {
+		options.set(name, { name, source, path: resolved });
+	}
+}
+
 function extensionNameFromPath(filePath: string): string | undefined {
 	const parsed = path.parse(filePath);
 	if (parsed.name === "index") return path.basename(parsed.dir);
 	return path.basename(parsed.dir) === "extensions" ? parsed.name : undefined;
+}
+
+function extensionNameFromSourceInfo(sourceInfo: SourceInfoLike | undefined): string | undefined {
+	if (sourceInfo?.source && isCanonicalResourceName(sourceInfo.source)) return sourceInfo.source;
+	return sourceInfo?.path ? extensionNameFromPath(sourceInfo.path) : undefined;
 }
 
 export function collectToolExtensionPaths(tools: ToolInfo[]): Map<string, string> {
@@ -65,9 +101,14 @@ export function collectToolExtensionPaths(tools: ToolInfo[]): Map<string, string
 
 export function collectNamedExtensionPaths(tools: ToolInfo[], commands: CommandInfoLike[] = []): Map<string, string> {
 	const result = new Map<string, string>();
-	for (const item of [...tools, ...commands]) {
-		const sourcePath = existingFile(item.sourceInfo?.path);
-		if (sourcePath) addIfMissing(result, extensionNameFromPath(sourcePath), sourcePath);
+	for (const tool of tools) {
+		const sourcePath = existingFile(tool.sourceInfo?.path);
+		if (sourcePath) addIfMissing(result, extensionNameFromSourceInfo(tool.sourceInfo), sourcePath);
+	}
+	for (const command of commands) {
+		if (command.source !== "extension") continue;
+		const sourcePath = existingFile(command.sourceInfo?.path);
+		if (sourcePath) addIfMissing(result, extensionNameFromSourceInfo(command.sourceInfo), sourcePath);
 	}
 	return result;
 }
@@ -143,6 +184,9 @@ export function resolveNamedExtension(
 		const resolved = existingFile(candidate);
 		if (resolved) return resolved;
 	}
+
+	const npmPackagePath = firstNpmPackageExtensionPath(path.join(GLOBAL_NPM_NODE_MODULES, name));
+	if (npmPackagePath) return npmPackagePath;
 	return undefined;
 }
 
@@ -226,6 +270,111 @@ export function resolveNamedSkills(
 	cwd: string = process.cwd(),
 ): { paths: string[]; unresolved: string[] } {
 	return resolveNamedList(names, (name) => resolveNamedSkill(name, skillPaths, cwd));
+}
+
+function addExtensionOptionsFromDir(
+	baseDir: string,
+	source: ResourceSource,
+	options: Map<string, NamedResourceOption>,
+): void {
+	if (!fs.existsSync(baseDir)) return;
+	for (const entry of fs.readdirSync(baseDir)) {
+		const entryPath = path.join(baseDir, entry);
+		const stat = fs.statSync(entryPath);
+		if (stat.isDirectory()) addOption(options, entry, path.join(entryPath, "index.ts"), source);
+		else if (stat.isFile() && entry.endsWith(".ts")) addOption(options, path.basename(entry, ".ts"), entryPath, source);
+	}
+}
+
+function addProjectExtensionOptions(
+	cwd: string,
+	options: Map<string, NamedResourceOption>,
+): void {
+	let currentDir = path.resolve(cwd);
+	while (true) {
+		addExtensionOptionsFromDir(path.join(currentDir, ".pi", "extensions"), "project", options);
+		const parentDir = path.dirname(currentDir);
+		if (parentDir === currentDir) return;
+		currentDir = parentDir;
+	}
+}
+
+function firstNpmPackageExtensionPath(packageDir: string): string | undefined {
+	for (const entry of npmPackageExtensionEntries(packageDir)) {
+		const entryPath = path.resolve(packageDir, entry);
+		const resolved = existingFile(entryPath);
+		if (resolved) return resolved;
+		const indexPath = existingFile(path.join(entryPath, "index.ts")) ?? existingFile(path.join(entryPath, "index.js"));
+		if (indexPath) return indexPath;
+	}
+	return undefined;
+}
+
+function addNpmExtensionOptions(
+	baseDir: string,
+	options: Map<string, NamedResourceOption>,
+): void {
+	if (!fs.existsSync(baseDir)) return;
+	for (const entry of fs.readdirSync(baseDir)) {
+		const entryPath = path.join(baseDir, entry);
+		if (!fs.statSync(entryPath).isDirectory()) continue;
+		if (entry.startsWith("@")) continue;
+		addOption(options, entry, firstNpmPackageExtensionPath(entryPath), "npm");
+	}
+}
+
+export function discoverSelectableExtensionOptions(
+	tools: ToolInfo[] = [],
+	commands: CommandInfoLike[] = [],
+	cwd: string = process.cwd(),
+): NamedResourceOption[] {
+	const options = new Map<string, NamedResourceOption>();
+	addProjectExtensionOptions(cwd, options);
+	for (const [name, filePath] of collectNamedExtensionPaths(tools, commands)) {
+		addOption(options, name, filePath, "loaded");
+	}
+	addExtensionOptionsFromDir(KUMPUL_EXTENSIONS_DIR, "package", options);
+	addExtensionOptionsFromDir(GLOBAL_EXT_BASE, "global", options);
+	addNpmExtensionOptions(GLOBAL_NPM_NODE_MODULES, options);
+	return [...options.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function addSkillOptionsFromDir(
+	baseDir: string,
+	source: ResourceSource,
+	options: Map<string, NamedResourceOption>,
+): void {
+	if (!fs.existsSync(baseDir)) return;
+	for (const entry of fs.readdirSync(baseDir)) {
+		const entryPath = path.join(baseDir, entry);
+		const stat = fs.statSync(entryPath);
+		if (stat.isDirectory()) addOption(options, entry, path.join(entryPath, "SKILL.md"), source);
+		else if (stat.isFile() && entry.endsWith(".md")) addOption(options, path.basename(entry, ".md"), entryPath, source);
+	}
+}
+
+function addProjectSkillOptions(cwd: string, options: Map<string, NamedResourceOption>): void {
+	let currentDir = path.resolve(cwd);
+	while (true) {
+		addSkillOptionsFromDir(path.join(currentDir, ".pi", "skills"), "project", options);
+		addSkillOptionsFromDir(path.join(currentDir, ".agents", "skills"), "project", options);
+		const parentDir = path.dirname(currentDir);
+		if (parentDir === currentDir) return;
+		currentDir = parentDir;
+	}
+}
+
+export function discoverSelectableSkillOptions(
+	commands: CommandInfoLike[] = [],
+	cwd: string = process.cwd(),
+): NamedResourceOption[] {
+	const options = new Map<string, NamedResourceOption>();
+	addProjectSkillOptions(cwd, options);
+	for (const [name, filePath] of collectSkillPaths(commands)) addOption(options, name, filePath, "loaded");
+	addSkillOptionsFromDir(GLOBAL_SKILLS_DIR, "global", options);
+	addSkillOptionsFromDir(LEGACY_GLOBAL_SKILLS_DIR, "global", options);
+	addSkillOptionsFromDir(KUMPUL_SKILLS_DIR, "package", options);
+	return [...options.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function readRegisterToolNames(filePath: string): string[] {

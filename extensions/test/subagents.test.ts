@@ -13,6 +13,8 @@ import {
 import {
 	collectNamedExtensionPaths,
 	discoverInstalledExtensionToolNames,
+	discoverSelectableExtensionOptions,
+	discoverSelectableSkillOptions,
 	discoverSelectableToolNames,
 	resolveCustomToolExtension,
 	resolveNamedExtension,
@@ -22,7 +24,14 @@ import { buildPiArgs, extractToolArgsPreview, formatSubagentFailure, MAX_SUBAGEN
 import { renderSubagentCall, toolsToShow } from "../subagents/render.ts";
 import { displayAgentName, MAX_TOOLS_COLLAPSED } from "../subagents/types.ts";
 import { isDangerousBashCommand } from "../subagents/tools/safe-bash.ts";
-import { validateDraft, writeAgentConfig } from "../subagents/agent-io.ts";
+import {
+	canEditSkills,
+	draftFromAgent,
+	mergeSelectedWithMissing,
+	splitResolvableAllowlist,
+	validateDraft,
+	writeAgentConfig,
+} from "../subagents/agent-io.ts";
 import {
 	loadMergedSubagentsUiConfig,
 	updateProjectSubagentsUiConfig,
@@ -549,6 +558,38 @@ test("project-local extension names take precedence over loaded metadata", async
 	assert.equal(args[extensionIdx + 1], path.join(extDir, "index.ts"));
 });
 
+test("named extension metadata uses explicit source names for nested entrypoints", () => {
+	const entrypoint = path.join(tempDir("kumpul-subagents-nested-ext-"), "nested-helper", "src", "index.ts");
+	fs.mkdirSync(path.dirname(entrypoint), { recursive: true });
+	fs.writeFileSync(entrypoint, "export default function () {}\n", "utf-8");
+	const names = collectNamedExtensionPaths([
+		{
+			name: "nested_tool",
+			label: "Nested Tool",
+			description: "",
+			parameters: {},
+			sourceInfo: { path: entrypoint, source: "nested-helper", scope: "user", origin: "top-level" },
+		},
+	] as never);
+	assert.equal(names.get("nested-helper"), entrypoint);
+	assert.equal(names.has("src"), false);
+});
+
+test("named extension metadata ignores non-extension commands", async () => {
+	const skillPath = path.join(tempDir("kumpul-subagents-skill-command-"), "SKILL.md");
+	fs.writeFileSync(skillPath, "---\nname: fake-extension\ndescription: Fake.\n---\n", "utf-8");
+	const commands = [
+		{ name: "skill:fake-extension", source: "skill", sourceInfo: { path: skillPath, source: "fake-extension" } },
+	];
+	const names = collectNamedExtensionPaths([], commands);
+	assert.equal(names.has("fake-extension"), false);
+	assert.equal(discoverSelectableExtensionOptions([], commands).some((option) => option.name === "fake-extension"), false);
+	await assert.rejects(
+		buildPiArgs(testAgent({ tools: ["read"], extensions: ["fake-extension"] }), "task", new Map(), new Map(), process.cwd(), names),
+		/Unable to resolve extensions/,
+	);
+});
+
 test("named extension metadata ignores tool implementation file basenames", () => {
 	const toolFile = path.join(tempDir("kumpul-subagents-tool-file-"), "tools", "project-helper.ts");
 	fs.mkdirSync(path.dirname(toolFile), { recursive: true });
@@ -642,6 +683,52 @@ test("config-io merges extension enabled and disabledAgents in project yaml", ()
 	assert.ok(loaded.disabledAgents.has("reviewer"));
 });
 
+test("config-io returns isolated disabledAgents sets", () => {
+	const cwd = tempDir("kumpul-subagents-ui-config-isolated-");
+	const loaded = loadMergedSubagentsUiConfig(cwd);
+	loaded.disabledAgents.add("reviewer");
+	assert.equal(loadMergedSubagentsUiConfig(cwd).disabledAgents.has("reviewer"), false);
+});
+
+test("draftFromAgent includes extension and skill allowlists", () => {
+	const draft = draftFromAgent(testAgent({ extensions: ["find-docs"], skills: ["diagnose"] }));
+	assert.deepEqual(draft.extensions, ["find-docs"]);
+	assert.deepEqual(draft.skills, ["diagnose"]);
+});
+
+test("validateDraft rejects empty tool allowlists", () => {
+	const agent = testAgent({ tools: ["read"] });
+	const error = validateDraft(agent, { tools: [], model: agent.model });
+	assert.ok(error);
+	assert.match(error, /tool/);
+});
+
+test("validateDraft rejects drafted skills without read", () => {
+	const agent = testAgent({ tools: ["read"] });
+	const error = validateDraft(agent, { tools: ["grep"], skills: ["diagnose"], model: agent.model });
+	assert.ok(error);
+	assert.match(error, /read/);
+});
+
+test("mergeSelectedWithMissing preserves unresolved saved allowlist names", () => {
+	assert.deepEqual(
+		mergeSelectedWithMissing(["pi-web-access"], ["find-docs", "missing-extension"], ["find-docs", "pi-web-access"]),
+		["pi-web-access", "missing-extension"],
+	);
+});
+
+test("splitResolvableAllowlist reports missing names even with no options", () => {
+	assert.deepEqual(splitResolvableAllowlist(["missing-skill"], []), {
+		selected: [],
+		missing: ["missing-skill"],
+	});
+});
+
+test("canEditSkills requires read access", () => {
+	assert.equal(canEditSkills(["read"]), true);
+	assert.equal(canEditSkills(["grep"]), false);
+});
+
 test("validateDraft rejects skilled agents without read", () => {
 	const agent = testAgent({ tools: ["read"], skills: ["diagnose"] });
 	const error = validateDraft(agent, { tools: ["grep"], model: agent.model });
@@ -675,6 +762,62 @@ Keep this body.`,
 	assert.equal(agent?.model, "openai-codex/gpt-5.4-mini");
 	assert.equal(agent?.thinking, "high");
 	assert.match(fs.readFileSync(filePath, "utf-8"), /Keep this body\./);
+});
+
+test("writeAgentConfig writes and removes extension and skill allowlists", () => {
+	const cwd = tempDir("kumpul-subagents-write-resources-");
+	const filePath = path.join(cwd, "helper.md");
+	fs.writeFileSync(
+		filePath,
+		`---
+name: helper
+description: Helper
+tools: read
+extensions: find-docs
+skills: diagnose
+model: anthropic/claude-sonnet-4-6
+thinking: medium
+---
+
+Keep this body.`,
+		"utf-8",
+	);
+	writeAgentConfig(filePath, { extensions: ["pi-web-access"], skills: [] });
+	const content = fs.readFileSync(filePath, "utf-8");
+	assert.match(content, /extensions: pi-web-access/);
+	assert.doesNotMatch(content, /^skills:/m);
+	const agent = parseAgentMarkdown(filePath);
+	assert.deepEqual(agent?.extensions, ["pi-web-access"]);
+	assert.equal(agent?.skills, undefined);
+});
+
+test("discoverSelectableExtensionOptions labels resolvable extension sources", () => {
+	const cwd = tempDir("kumpul-subagents-extension-options-");
+	const projectExt = path.join(cwd, ".pi", "extensions", "project-helper");
+	fs.mkdirSync(projectExt, { recursive: true });
+	fs.writeFileSync(path.join(projectExt, "index.ts"), "export default function () {}\n", "utf-8");
+	const options = discoverSelectableExtensionOptions([], [], cwd);
+	assert.equal(options.find((option) => option.name === "project-helper")?.source, "project");
+	assert.equal(options.find((option) => option.name === "find-docs")?.source, "package");
+	assert.equal(options.some((option) => option.name === "missing-extension"), false);
+});
+
+test("discoverSelectableSkillOptions labels resolvable skill sources", () => {
+	const cwd = tempDir("kumpul-subagents-skill-options-");
+	const projectSkill = path.join(cwd, ".pi", "skills", "project-skill");
+	fs.mkdirSync(projectSkill, { recursive: true });
+	fs.writeFileSync(path.join(projectSkill, "SKILL.md"), "---\nname: project-skill\ndescription: Project skill.\n---\n", "utf-8");
+	const loadedDir = tempDir("kumpul-subagents-loaded-skill-option-");
+	const loadedSkill = path.join(loadedDir, "SKILL.md");
+	fs.writeFileSync(loadedSkill, "---\nname: loaded-skill\ndescription: Loaded skill.\n---\n", "utf-8");
+	const options = discoverSelectableSkillOptions(
+		[{ name: "skill:loaded-skill", source: "skill", sourceInfo: { path: loadedSkill } }],
+		cwd,
+	);
+	assert.equal(options.find((option) => option.name === "project-skill")?.source, "project");
+	assert.equal(options.find((option) => option.name === "loaded-skill")?.source, "loaded");
+	assert.equal(options.find((option) => option.name === "test-driven-development")?.source, "package");
+	assert.equal(options.some((option) => option.name === "missing-skill"), false);
 });
 
 test("discoverSelectableToolNames includes builtins, session tools, and kumpul extension tools", () => {

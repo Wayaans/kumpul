@@ -85,7 +85,9 @@ Unresolved tools, extension names, and skill names fail fast instead of being si
 
 ## UI
 
-`/subagents` — centered overlay to enable/disable the extension, toggle per-agent spawn, and edit **tools**, **model**, and **thinking** on existing agent `.md` files (including package builtins). Changes apply after `/reload`.
+`/subagents` — centered overlay to enable/disable the extension, toggle per-agent spawn, and edit **tools**, **extensions**, **skills**, **model**, and **thinking** on existing agent `.md` files (including package builtins). Changes apply after `/reload`.
+
+Extension and skill pickers show only currently resolvable names with source labels (`project`, `loaded`, `package`, `global`, `npm`). Missing saved names are warned about and preserved on save; remove them manually from the `.md` file. Skills are editable only when `read` is enabled, and `read` stays locked while skills are selected.
 
 Ctrl+O toggles collapsed (header + last 15 tool calls) vs expanded (full task, all tool calls, markdown output, nested subagent rows).
 

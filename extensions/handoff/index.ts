@@ -6,27 +6,27 @@ import {
 	serializeConversation,
 } from "@earendil-works/pi-coding-agent";
 
-const SYSTEM_PROMPT = `You are a context transfer assistant. Given a conversation history and the user's goal for a new thread, generate a focused prompt that:
+export const HANDOFF_SYSTEM_PROMPT = `Write a handoff document summarising the current conversation so a fresh agent can continue the work.
 
-1. Summarizes relevant context from the conversation (decisions made, approaches taken, key findings)
-2. Lists any relevant files that were discussed or modified
-3. Clearly states the next task based on the user's goal
-4. Is self-contained - the new thread should be able to proceed without the old conversation
+Include a "suggested skills" section in the document, which suggests skills that the agent should invoke.
+
+Do not duplicate content already captured in other artifacts (PRDs, plans, ADRs, issues, commits, diffs, or any reference files). Reference them by path or URL instead.
+
+Redact any sensitive information, such as API keys, passwords, or personally identifiable information.
+
+If you mention a skill, always use prefix \`/skill:<skill-name>\`.
+
+If the user passed arguments, treat them as a description of what the next session will focus on and tailor the doc accordingly.
 
 Format your response as a prompt the user can send to start the new thread. Be concise but include all necessary context. Do not include any preamble like "Here's the prompt" - just output the prompt itself.
 
-Example output format:
-## Context
-We've been working on X. Key decisions:
-- Decision 1
-- Decision 2
+Use this output format:
 
-Files involved:
-- path/to/file1.ts
-- path/to/file2.ts
+## Context
+[Summarise relevant context, decisions, files, references, and suggested skills.]
 
 ## Task
-[Clear description of what to do next based on user's goal]`;
+[Clear description of what to do next based on the user's goal.]`;
 
 export default function (pi: ExtensionAPI): void {
 	pi.registerCommand("handoff", {
@@ -84,7 +84,7 @@ export default function (pi: ExtensionAPI): void {
 
 					const response = await complete(
 						ctx.model!,
-						{ systemPrompt: SYSTEM_PROMPT, messages: [userMessage] },
+						{ systemPrompt: HANDOFF_SYSTEM_PROMPT, messages: [userMessage] },
 						{ apiKey: auth.apiKey, headers: auth.headers, signal: loader.signal },
 					);
 
