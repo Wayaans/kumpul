@@ -16,6 +16,9 @@
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
+  "dependencies": {
+    "yaml": "^2.8.1"
+  },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "^0.78.0",
     "@earendil-works/pi-ai": "^0.78.0",
@@ -23,8 +26,7 @@
     "@earendil-works/pi-tui": "^0.78.0",
     "@types/node": "^24.5.2",
     "typebox": "^1.1.38",
-    "typescript": "^6.0.2",
-    "yaml": "^2.8.1"
+    "typescript": "^6.0.2"
   },
   "pi": {
     "extensions": ["./extensions"],

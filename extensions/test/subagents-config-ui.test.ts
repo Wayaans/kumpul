@@ -27,12 +27,20 @@ function testAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
 	};
 }
 
-test("config-io merges extension enabled and disabledAgents in project yaml", () => {
+test("config-io merges extension enabled and disabledAgents in trusted project yaml", () => {
 	const cwd = tempDir("kumpul-subagents-ui-config-");
 	updateProjectSubagentsUiConfig(cwd, { enabled: false, disabledAgents: new Set(["reviewer"]) });
-	const loaded = loadMergedSubagentsUiConfig(cwd);
+	const loaded = loadMergedSubagentsUiConfig(cwd, { includeProject: true });
 	assert.equal(loaded.enabled, false);
 	assert.ok(loaded.disabledAgents.has("reviewer"));
+});
+
+test("config-io ignores project yaml when project is untrusted", () => {
+	const cwd = tempDir("kumpul-subagents-ui-config-untrusted-");
+	updateProjectSubagentsUiConfig(cwd, { enabled: false, disabledAgents: new Set(["reviewer"]) });
+	const loaded = loadMergedSubagentsUiConfig(cwd, { includeProject: false });
+	assert.equal(loaded.enabled, true);
+	assert.equal(loaded.disabledAgents.has("reviewer"), false);
 });
 
 test("config-io returns isolated disabledAgents sets", () => {
@@ -56,16 +64,17 @@ test("config-io saves nested config without stale legacy top-level keys", () => 
 	assert.deepEqual([...loaded.disabledAgents], ["reviewer"]);
 });
 
-test("resolveEffectiveAgent injects cursor provider extension from parsed model provider", () => {
+test("resolveEffectiveAgent does not inject cursor provider extension", () => {
 	const effective = resolveEffectiveAgent(testAgent({ model: "Cursor/composer-2.5", extensions: undefined }), {
 		model: "",
 		thinking: "off",
 	});
-	assert.deepEqual(effective.extensions, ["pi-cursor-sdk"]);
+	assert.equal(effective.extensions, undefined);
 });
 
-test("draftFromAgent includes extension and skill allowlists", () => {
-	const draft = draftFromAgent(testAgent({ extensions: ["find-docs"], skills: ["diagnose"] }));
+test("draftFromAgent includes nested subagent, extension, and skill allowlists", () => {
+	const draft = draftFromAgent(testAgent({ subagentAgents: ["reviewer"], extensions: ["find-docs"], skills: ["diagnose"] }));
+	assert.deepEqual(draft.subagentAgents, ["reviewer"]);
 	assert.deepEqual(draft.extensions, ["find-docs"]);
 	assert.deepEqual(draft.skills, ["diagnose"]);
 });

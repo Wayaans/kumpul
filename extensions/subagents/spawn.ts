@@ -132,16 +132,10 @@ export interface InheritedAgentConfig {
 }
 
 export function resolveEffectiveAgent(agent: AgentConfig, inherited: InheritedAgentConfig = {}): AgentConfig {
-	const model = agent.model || inherited.model || "";
-	const extensions = [
-		...(agent.extensions ?? []),
-		...(isCursorModel(model) && !agent.extensions?.includes("pi-cursor-sdk") ? ["pi-cursor-sdk"] : []),
-	];
 	return {
 		...agent,
-		model,
+		model: agent.model || inherited.model || "",
 		thinking: agent.thinking || inherited.thinking || "",
-		...(extensions.length > 0 ? { extensions } : {}),
 	};
 }
 
@@ -152,6 +146,7 @@ export async function buildPiArgs(
 	skillPaths: SkillPaths = new Map(),
 	cwd: string = process.cwd(),
 	extensionNamePaths: ExtensionNamePaths = new Map(),
+	options: { includeProject?: boolean } = { includeProject: true },
 ): Promise<{ args: string[]; tempDir: string; childEnv: NodeJS.ProcessEnv }> {
 	agent = resolveEffectiveAgent(agent);
 	const depth = getCurrentSubagentDepth();
@@ -182,13 +177,13 @@ export async function buildPiArgs(
 		throw new Error(`Unable to resolve tools for agent ${agent.name}: ${unresolvedTools.join(", ")}`);
 	}
 
-	const extensionAllowlist = resolveNamedExtensions(agent.extensions, extensionNamePaths, cwd);
+	const extensionAllowlist = resolveNamedExtensions(agent.extensions, extensionNamePaths, cwd, options);
 	if (extensionAllowlist.unresolved.length > 0) {
 		throw new Error(`Unable to resolve extensions for agent ${agent.name}: ${extensionAllowlist.unresolved.join(", ")}`);
 	}
 	for (const extPath of extensionAllowlist.paths) extensionPaths.add(extPath);
 
-	const skillAllowlist = resolveNamedSkills(agent.skills, skillPaths, cwd);
+	const skillAllowlist = resolveNamedSkills(agent.skills, skillPaths, cwd, options);
 	if (skillAllowlist.unresolved.length > 0) {
 		throw new Error(`Unable to resolve skills for agent ${agent.name}: ${skillAllowlist.unresolved.join(", ")}`);
 	}
@@ -290,6 +285,7 @@ function throttle<T extends (...args: unknown[]) => void>(fn: T, ms: number): T 
 export interface RunSubagentOptions {
 	alias?: string;
 	inherited?: InheritedAgentConfig;
+	includeProject?: boolean;
 }
 
 export async function runSubagent(
@@ -305,7 +301,7 @@ export async function runSubagent(
 ): Promise<AgentResult> {
 	const { alias } = options;
 	agent = resolveEffectiveAgent(agent, options.inherited);
-	const { args, tempDir, childEnv } = await buildPiArgs(agent, task, toolExtensionPaths, skillPaths, cwd, extensionNamePaths);
+	const { args, tempDir, childEnv } = await buildPiArgs(agent, task, toolExtensionPaths, skillPaths, cwd, extensionNamePaths, { includeProject: options.includeProject });
 	const command = args[0];
 	const spawnArgs = args.slice(1);
 
@@ -605,14 +601,17 @@ export async function runSubagent(
 	progress.durationMs = Date.now() - startTime;
 	if (progress.error) result.output = result.output || `Error: ${progress.error}`;
 
-	if (result.output.length > DEFAULT_MAX_BYTES) {
-		const trunc = truncateHead(result.output, {
+	if (Buffer.byteLength(result.output, "utf8") > DEFAULT_MAX_BYTES) {
+		const fullOutput = result.output;
+		const trunc = truncateHead(fullOutput, {
 			maxLines: DEFAULT_MAX_LINES,
 			maxBytes: DEFAULT_MAX_BYTES,
 		});
 		result.output = trunc.content;
 		if (trunc.truncated) {
-			result.output += "\n\n[Output truncated]";
+			const outputPath = path.join(os.tmpdir(), `pi-subagent-output-${process.pid}-${Date.now()}.txt`);
+			fs.writeFileSync(outputPath, fullOutput, { encoding: "utf-8", mode: 0o600 });
+			result.output += `\n\n[Output truncated: full output saved to ${outputPath}]`;
 		}
 	}
 
@@ -631,24 +630,45 @@ export function formatSubagentFailure(result: AgentResult): string {
 
 export class Semaphore {
 	private inFlight = 0;
-	private readonly waiters: Array<() => void> = [];
+	private readonly waiters: Array<{ resolve(): void; reject(error: Error): void; signal?: AbortSignal; abort(): void }> = [];
 	private readonly max: number;
 
 	constructor(max: number) {
 		this.max = max;
 	}
 
-	async run<T>(fn: () => Promise<T>): Promise<T> {
+	async run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
 		if (this.inFlight >= this.max) {
-			await new Promise<void>((r) => this.waiters.push(r));
+			await new Promise<void>((resolve, reject) => {
+				const waiter = {
+					resolve: () => {
+						signal?.removeEventListener("abort", waiter.abort);
+						resolve();
+					},
+					reject,
+					signal,
+					abort: () => {
+						const index = this.waiters.indexOf(waiter);
+						if (index >= 0) this.waiters.splice(index, 1);
+						reject(new Error("Subagent run aborted before start"));
+					},
+				};
+				if (signal?.aborted) {
+					waiter.abort();
+					return;
+				}
+				signal?.addEventListener("abort", waiter.abort, { once: true });
+				this.waiters.push(waiter);
+			});
 		}
+		if (signal?.aborted) throw new Error("Subagent run aborted before start");
 		this.inFlight++;
 		try {
 			return await fn();
 		} finally {
 			this.inFlight--;
 			const next = this.waiters.shift();
-			if (next) next();
+			if (next) next.resolve();
 		}
 	}
 }

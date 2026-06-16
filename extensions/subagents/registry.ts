@@ -6,7 +6,11 @@ import { parseModelRef, THINKING_LEVELS, type AgentConfig, type AgentSource } fr
 
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
 const PACKAGE_AGENTS_DIR = path.join(EXTENSION_DIR, "agents");
-const PROJECT_AGENTS_RELATIVE = path.join(".pi", "kumpul", "agens");
+const PROJECT_AGENTS_RELATIVE = path.join(".pi", "kumpul", "agents");
+
+export interface AgentDiscoveryOptions {
+	includeProject?: boolean;
+}
 
 let agents: AgentConfig[] = [];
 const dynamicAgents = new Map<string, AgentConfig>();
@@ -138,8 +142,10 @@ export function unregisterAgent(name: string): void {
 	rebuildAgentList();
 }
 
+let lastDiscoveryOptions: AgentDiscoveryOptions = { includeProject: true };
+
 function rebuildAgentList(): void {
-	const fileAgents = discoverFileAgents(lastDiscoverCwd);
+	const fileAgents = discoverFileAgents(lastDiscoverCwd, lastDiscoveryOptions);
 	const map = new Map<string, AgentConfig>();
 	for (const agent of fileAgents) {
 		map.set(agent.name, agent);
@@ -150,8 +156,9 @@ function rebuildAgentList(): void {
 	agents = Array.from(map.values());
 }
 
-export function loadAgents(cwd: string = process.cwd()): AgentConfig[] {
+export function loadAgents(cwd: string = process.cwd(), options: AgentDiscoveryOptions = { includeProject: true }): AgentConfig[] {
 	lastDiscoverCwd = sanitizeDiscoveryCwd(cwd);
+	lastDiscoveryOptions = options;
 	rebuildAgentList();
 	return agents;
 }
@@ -285,7 +292,7 @@ export function getProjectAgentsDir(cwd: string): string {
 }
 
 /** Package → user global → project-local kumpul overrides. */
-export function discoverFileAgents(cwd: string): AgentConfig[] {
+export function discoverFileAgents(cwd: string, options: AgentDiscoveryOptions = { includeProject: true }): AgentConfig[] {
 	const safeCwd = sanitizeDiscoveryCwd(cwd);
 	const map = new Map<string, AgentConfig>();
 
@@ -298,10 +305,12 @@ export function discoverFileAgents(cwd: string): AgentConfig[] {
 		map.set(agent.name, agent);
 	}
 
-	const projectDir = findNearestProjectAgentsDir(safeCwd);
-	if (projectDir) {
-		for (const agent of loadAgentsFromDir(projectDir, "project")) {
-			map.set(agent.name, agent);
+	if (options.includeProject !== false) {
+		const projectDir = findNearestProjectAgentsDir(safeCwd);
+		if (projectDir) {
+			for (const agent of loadAgentsFromDir(projectDir, "project")) {
+				map.set(agent.name, agent);
+			}
 		}
 	}
 

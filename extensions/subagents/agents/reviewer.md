@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Read-only code reviewer — findings only, no edits
-tools: fetch_content, find, find_docs, ls, read
+tools: find, find_docs, ls, read
 model: openai-codex/gpt-5.4-mini
 thinking: high
 ---

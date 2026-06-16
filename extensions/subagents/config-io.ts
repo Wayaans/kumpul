@@ -1,9 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { parse, stringify } from "yaml";
-
-const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
 const EXTENSION_IDS = new Set(["subagents", "subagent", "pi-subagents"]);
 
 export interface SubagentsUiConfig {
@@ -41,10 +38,6 @@ function findProjectRoot(startCwd: string): string {
 		}
 		current = parent;
 	}
-}
-
-export function getDefaultConfigPath(): string {
-	return path.join(EXTENSION_DIR, "config.yaml");
 }
 
 export function getProjectConfigPath(cwd: string): string {
@@ -109,12 +102,11 @@ function cloneDisabledAgents(disabledAgents: Set<string> | undefined): Set<strin
 	return new Set(disabledAgents ?? DEFAULTS.disabledAgents);
 }
 
-export function loadMergedSubagentsUiConfig(cwd: string): SubagentsUiConfig {
-	const fromDefault = extractConfig(readYamlFile(getDefaultConfigPath()));
-	const fromProject = extractConfig(readYamlFile(getProjectConfigPath(cwd)));
+export function loadMergedSubagentsUiConfig(cwd: string, options: { includeProject?: boolean } = { includeProject: true }): SubagentsUiConfig {
+	const fromProject = options.includeProject === false ? {} : extractConfig(readYamlFile(getProjectConfigPath(cwd)));
 	return {
-		enabled: fromProject.enabled ?? fromDefault.enabled ?? DEFAULTS.enabled,
-		disabledAgents: cloneDisabledAgents(fromProject.disabledAgents ?? fromDefault.disabledAgents),
+		enabled: fromProject.enabled ?? DEFAULTS.enabled,
+		disabledAgents: cloneDisabledAgents(fromProject.disabledAgents),
 	};
 }
 

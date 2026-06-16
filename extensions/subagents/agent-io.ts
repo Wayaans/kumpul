@@ -7,6 +7,7 @@ import { parseModelRef, THINKING_LEVELS, type AgentConfig } from "./types.ts";
 
 export interface AgentConfigPatch {
 	tools?: string[];
+	subagentAgents?: string[];
 	extensions?: string[];
 	skills?: string[];
 	model?: string;
@@ -20,6 +21,10 @@ function formatList(values: string[]): string {
 function applyPatch(frontmatter: Record<string, unknown>, patch: AgentConfigPatch): Record<string, unknown> {
 	const next = { ...frontmatter };
 	if (patch.tools !== undefined) next.tools = formatList(patch.tools);
+	if (patch.subagentAgents !== undefined) {
+		if (patch.subagentAgents.length > 0) next.subagent_agents = formatList(patch.subagentAgents);
+		else delete next.subagent_agents;
+	}
 	if (patch.extensions !== undefined) {
 		if (patch.extensions.length > 0) next.extensions = formatList(patch.extensions);
 		else delete next.extensions;
@@ -64,6 +69,7 @@ export function writeAgentConfig(filePath: string, patch: AgentConfigPatch): voi
 export function draftFromAgent(agent: AgentConfig): AgentConfigPatch {
 	return {
 		tools: [...agent.tools],
+		...(agent.subagentAgents ? { subagentAgents: [...agent.subagentAgents] } : {}),
 		...(agent.extensions ? { extensions: [...agent.extensions] } : {}),
 		...(agent.skills ? { skills: [...agent.skills] } : {}),
 		model: agent.model,
@@ -111,6 +117,7 @@ function sameList(a: string[] | undefined, b: string[] | undefined): boolean {
 export function changedDraftPatch(agent: AgentConfig, draft: AgentConfigPatch): AgentConfigPatch {
 	const patch: AgentConfigPatch = {};
 	if (draft.tools !== undefined && !sameList(draft.tools, agent.tools)) patch.tools = draft.tools;
+	if (draft.subagentAgents !== undefined && !sameList(draft.subagentAgents, agent.subagentAgents)) patch.subagentAgents = draft.subagentAgents;
 	if (draft.extensions !== undefined && !sameList(draft.extensions, agent.extensions)) patch.extensions = draft.extensions;
 	if (draft.skills !== undefined && !sameList(draft.skills, agent.skills)) patch.skills = draft.skills;
 	if (draft.model !== undefined && draft.model !== agent.model) patch.model = draft.model;
@@ -154,10 +161,11 @@ export function persistAgentDraft(cwd: string, agent: AgentConfig, draft: AgentC
 
 export function validateDraft(agent: AgentConfig, draft: AgentConfigPatch): string | null {
 	const tools = draft.tools ?? agent.tools;
+	const subagentAgents = draft.subagentAgents ?? agent.subagentAgents ?? [];
 	const skills = draft.skills ?? agent.skills ?? [];
 	if (tools.length === 0) return "Agents need at least one tool.";
-	if (tools.includes("subagent") && (!agent.subagentAgents || agent.subagentAgents.length === 0)) {
-		return "Agents with the subagent tool need subagent_agents in frontmatter (edit the .md file).";
+	if (tools.includes("subagent") && subagentAgents.length === 0) {
+		return "Agents with the subagent tool need at least one subagent_agents entry.";
 	}
 	if (skills.length > 0 && !tools.includes("read")) {
 		return "Agents with skills need read in tools so they can load SKILL.md files.";

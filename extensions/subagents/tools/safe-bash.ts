@@ -8,7 +8,7 @@ import { createBashTool } from "@earendil-works/pi-coding-agent";
 const SHELL = String.raw`(?:/(?:usr/)?bin/)?(?:ba|z|c|k)?sh`;
 
 const DANGEROUS_PATTERNS: RegExp[] = [
-	new RegExp(String.raw`\brm\b[^;&|\n]*(?:\s--no-preserve-root\b|\s--\s*)?(?:/(?:\s|$)|/\*(?:\s|$)|~(?:/|\s|$)|["']?\$HOME(?:/|\s|$))`, "i"),
+	new RegExp(String.raw`\brm\b[^;&|\n]*(?:\s--no-preserve-root\b|\s--\s*)?(?:/(?:\s|$)|/\*(?:\s|$)|~(?:/|\s|$)|["']?\$HOME(?:/|\s|$)|\.\.?(?:[/*/\\]|\s|$)|\.(?:[/*/\\]|\s|$)|\*(?:\s|$))`, "i"),
 	/\bsudo\b/i,
 	/\bmkfs(?:\.[a-z0-9]+)?\b/i,
 	/\bdd\s+if=/i,
@@ -27,6 +27,8 @@ const DANGEROUS_PATTERNS: RegExp[] = [
 	/\binit\s+0\b/i,
 	/\bkill\s+-9\s+1\b/i,
 	/\bkillall\b/i,
+	/\bpkill\b/i,
+	/\bgit\s+clean\b[^;&|\n]*-(?:[^\s]*[fxd]|[fxd][^\s]*)/i,
 ];
 
 export function isDangerousBashCommand(command: string): string | null {

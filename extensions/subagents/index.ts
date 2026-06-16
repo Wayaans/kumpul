@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isAgentSpawnEnabled, loadMergedSubagentsUiConfig } from "./config-io.ts";
 import { getAgents, loadAgents, sanitizeDiscoveryCwd } from "./registry.ts";
 import { showSubagentsSetup } from "./setup-ui.ts";
@@ -21,6 +21,11 @@ import { containsControlCharacters, parseModelRef, sanitizeDisplayText, type Age
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
 const CONFIG_PATH = path.join(EXTENSION_DIR, "config.json");
 const DEFAULT_MAX_CONCURRENCY = 4;
+
+function isProjectTrusted(ctx: ExtensionContext): boolean {
+	return ((ctx as ExtensionContext & { isProjectTrusted?: () => boolean }).isProjectTrusted?.() ?? false);
+}
+
 export function normalizeSubagentAlias(raw: unknown): string | undefined {
 	if (raw === undefined || raw === null) return undefined;
 	if (typeof raw !== "string") throw new Error("subagent alias must be a string");
@@ -60,7 +65,7 @@ export default function (pi: ExtensionAPI): void {
 	const config = loadConfig();
 	const semaphore = new Semaphore(config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY);
 
-	loadAgents(process.cwd());
+	loadAgents(process.cwd(), { includeProject: false });
 
 	pi.registerCommand("subagents", {
 		description: "Configure subagents (extension, spawn, tools, model, thinking)",
@@ -94,7 +99,7 @@ export default function (pi: ExtensionAPI): void {
 			cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
 		}),
 
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			if (!params.agent || !params.task) {
 				throw new Error(
 					"`subagent` requires both `agent` and `task`. To fan out work, emit multiple `subagent` tool calls in the same turn — they run in parallel.",
@@ -102,9 +107,10 @@ export default function (pi: ExtensionAPI): void {
 			}
 			const alias = normalizeSubagentAlias(params.alias);
 			const cwd = sanitizeDiscoveryCwd(params.cwd ?? ctx.cwd);
-			loadAgents(cwd);
+			const includeProject = isProjectTrusted(ctx);
+			loadAgents(cwd, { includeProject });
 
-			const uiConfig = loadMergedSubagentsUiConfig(cwd);
+			const uiConfig = loadMergedSubagentsUiConfig(cwd, { includeProject });
 			if (!uiConfig.enabled) {
 				throw new Error("Subagents extension is disabled. Run /subagents to enable, then /reload.");
 			}
@@ -187,8 +193,9 @@ export default function (pi: ExtensionAPI): void {
 					toolExtensionPaths,
 					skillPaths,
 					extensionNamePaths,
-					{ alias, inherited },
+					{ alias, inherited, includeProject },
 				),
+				signal,
 			);
 
 			result.contextWindow = contextWindow;

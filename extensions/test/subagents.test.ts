@@ -19,29 +19,20 @@ import {
 	discoverSelectableToolNames,
 	resolveCustomToolExtension,
 	resolveNamedExtension,
+	resolveNamedSkill,
 } from "../subagents/resolve-tools.ts";
 import { parseCursorThinkingActivity } from "../subagents/cursor-progress.ts";
-import { buildPiArgs, extractToolArgsPreview, formatSubagentFailure, MAX_SUBAGENT_DEPTH, progressSignature, resolveEffectiveAgent, runSubagent } from "../subagents/spawn.ts";
-import { renderSubagentCall, toolsToShow } from "../subagents/render.ts";
-import { MAX_TOOLS_COLLAPSED } from "../subagents/types.ts";
-import { isDangerousBashCommand } from "../subagents/tools/safe-bash.ts";
-import { displayModelValue, displayThinkingValue } from "../subagents/setup-ui.ts";
+import { buildPiArgs, MAX_SUBAGENT_DEPTH, runSubagent } from "../subagents/spawn.ts";
 import {
 	canEditSkills,
-	changedDraftPatch,
-	draftFromAgent,
 	mergeSelectedWithMissing,
 	splitResolvableAllowlist,
 	validateDraft,
 	writeAgentConfig,
 	writeProjectAgentConfig,
 } from "../subagents/agent-io.ts";
-import {
-	loadMergedSubagentsUiConfig,
-	updateProjectSubagentsUiConfig,
-} from "../subagents/config-io.ts";
-import subagentsExtension, { normalizeSubagentAlias, parseConfig, registerAgent, unregisterAgent } from "../subagents/index.ts";
-import type { AgentConfig, AgentProgress } from "../subagents/types.ts";
+import subagentsExtension, { parseConfig, registerAgent, unregisterAgent } from "../subagents/index.ts";
+import type { AgentConfig } from "../subagents/types.ts";
 
 function tempDir(prefix: string): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -107,11 +98,11 @@ test("discoverFileAgents keeps package builtins pinned by default", () => withou
 	assert.equal(agent?.skills, undefined);
 }));
 
-test("project kumpul agents override package builtins by default", () => withoutSubagentAllowlist(() => {
+test("trusted project kumpul agents override package builtins", () => withoutSubagentAllowlist(() => {
 	const cwd = tempDir("kumpul-subagents-project-");
-	fs.mkdirSync(path.join(cwd, ".pi", "kumpul", "agens"), { recursive: true });
+	fs.mkdirSync(path.join(cwd, ".pi", "kumpul", "agents"), { recursive: true });
 	fs.writeFileSync(
-		path.join(cwd, ".pi", "kumpul", "agens", "reviewer.md"),
+		path.join(cwd, ".pi", "kumpul", "agents", "reviewer.md"),
 		`---
 name: reviewer
 description: Project-specific reviewer
@@ -122,7 +113,7 @@ Project reviewer body.`,
 		"utf-8",
 	);
 	fs.writeFileSync(
-		path.join(cwd, ".pi", "kumpul", "agens", "project-helper.md"),
+		path.join(cwd, ".pi", "kumpul", "agents", "project-helper.md"),
 		`---
 name: project-helper
 description: Project helper
@@ -133,18 +124,38 @@ Project helper body.`,
 		"utf-8",
 	);
 
-	const agents = discoverFileAgents(cwd);
+	const agents = discoverFileAgents(cwd, { includeProject: true });
 	assert.equal(agents.find((a) => a.name === "project-helper")?.source, "project");
 	assert.equal(agents.find((a) => a.name === "reviewer")?.description, "Project-specific reviewer");
+}));
+
+test("untrusted project kumpul agents cannot override package builtins", () => withoutSubagentAllowlist(() => {
+	const cwd = tempDir("kumpul-subagents-project-untrusted-");
+	fs.mkdirSync(path.join(cwd, ".pi", "kumpul", "agents"), { recursive: true });
+	fs.writeFileSync(
+		path.join(cwd, ".pi", "kumpul", "agents", "reviewer.md"),
+		`---
+name: reviewer
+description: Project-specific reviewer
+tools: read
+model: anthropic/claude-haiku-4-5
+---
+Project reviewer body.`,
+		"utf-8",
+	);
+
+	const agents = discoverFileAgents(cwd, { includeProject: false });
+	assert.equal(agents.find((a) => a.name === "reviewer")?.source, "package");
+	assert.notEqual(agents.find((a) => a.name === "reviewer")?.description, "Project-specific reviewer");
 }));
 
 test("findNearestProjectAgentsDir walks up", () => {
 	const root = tempDir("kumpul-subagents-walk-");
 	const nested = path.join(root, "a", "b");
-	fs.mkdirSync(path.join(root, ".pi", "kumpul", "agens"), { recursive: true });
+	fs.mkdirSync(path.join(root, ".pi", "kumpul", "agents"), { recursive: true });
 	fs.mkdirSync(nested, { recursive: true });
-	assert.equal(findNearestProjectAgentsDir(nested), fs.realpathSync(path.join(root, ".pi", "kumpul", "agens")));
-	assert.equal(getProjectAgentsDir(nested), fs.realpathSync(path.join(root, ".pi", "kumpul", "agens")));
+	assert.equal(findNearestProjectAgentsDir(nested), fs.realpathSync(path.join(root, ".pi", "kumpul", "agents")));
+	assert.equal(getProjectAgentsDir(nested), fs.realpathSync(path.join(root, ".pi", "kumpul", "agents")));
 });
 
 test("parseAgentMarkdown reads subagent_agents", () => {
@@ -331,7 +342,7 @@ test("buildPiArgs omits --model, --models, and --thinking when agent values are 
 	assert.equal(args.indexOf("--thinking"), -1);
 });
 
-test("buildPiArgs injects pi-cursor-sdk for cursor/* models", async () => {
+test("buildPiArgs does not inject pi-cursor-sdk for cursor/* models", async () => {
 	const agent = testAgent({ model: "cursor/composer-2.5", tools: ["read"] });
 	const { args } = await buildPiArgs(agent, "task");
 	assert.equal(args[args.indexOf("--model") + 1], "cursor/composer-2.5");
@@ -339,17 +350,19 @@ test("buildPiArgs injects pi-cursor-sdk for cursor/* models", async () => {
 	for (let i = 0; i < args.length; i++) {
 		if (args[i] === "--extension") extensionPaths.push(args[i + 1]!);
 	}
-	assert.equal(extensionPaths.filter((p) => p.includes("pi-cursor-sdk")).length, 1);
+	assert.equal(extensionPaths.filter((p) => p.includes("pi-cursor-sdk")).length, 0);
 });
 
 test("buildPiArgs loads pi-cursor-sdk from the explicit extension allowlist", async () => {
 	const agent = testAgent({ model: "cursor/composer-2.5", tools: ["read"], extensions: ["pi-cursor-sdk"] });
-	const { args } = await buildPiArgs(agent, "task");
+	const fakeCursorExtension = path.join(tempDir("kumpul-subagents-cursor-extension-"), "index.ts");
+	fs.writeFileSync(fakeCursorExtension, "export default function () {}\n", "utf-8");
+	const { args } = await buildPiArgs(agent, "task", new Map(), new Map(), process.cwd(), new Map([["pi-cursor-sdk", fakeCursorExtension]]));
 	const extensionPaths: string[] = [];
 	for (let i = 0; i < args.length; i++) {
 		if (args[i] === "--extension") extensionPaths.push(args[i + 1]!);
 	}
-	assert.ok(extensionPaths.some((p) => p.includes("pi-cursor-sdk")), "expected pi-cursor-sdk --extension");
+	assert.deepEqual(extensionPaths, [fakeCursorExtension]);
 });
 
 test("subagent depth env rejects spawning beyond max depth", async () => {
@@ -424,6 +437,14 @@ test("project-local extension names take precedence over loaded metadata", async
 	);
 	const extensionIdx = args.indexOf("--extension");
 	assert.equal(args[extensionIdx + 1], path.join(extDir, "index.ts"));
+});
+
+test("untrusted project-local extension names are ignored", () => {
+	const cwd = tempDir("kumpul-subagents-project-ext-untrusted-");
+	const extDir = path.join(cwd, ".pi", "extensions", "project-helper");
+	fs.mkdirSync(extDir, { recursive: true });
+	fs.writeFileSync(path.join(extDir, "index.ts"), "export default function () {}\n", "utf-8");
+	assert.equal(resolveNamedExtension("project-helper", new Map(), cwd, { includeProject: false }), undefined);
 });
 
 test("named extension metadata uses explicit source names for nested entrypoints", () => {
@@ -530,6 +551,14 @@ Project skill body.
 	);
 	const skillIdx = args.indexOf("--skill");
 	assert.equal(args[skillIdx + 1], path.join(skillDir, "SKILL.md"));
+});
+
+test("untrusted project-local skill names are ignored", () => {
+	const cwd = tempDir("kumpul-subagents-project-skill-untrusted-");
+	const skillDir = path.join(cwd, ".pi", "skills", "project-skill");
+	fs.mkdirSync(skillDir, { recursive: true });
+	fs.writeFileSync(path.join(skillDir, "SKILL.md"), "---\nname: project-skill\ndescription: Project.\n---\n", "utf-8");
+	assert.equal(resolveNamedSkill("project-skill", new Map(), cwd, { includeProject: false }), undefined);
 });
 
 test("buildPiArgs fails fast for unknown extension and skill allowlist names", async () => {
@@ -641,7 +670,7 @@ metadata:
 `,
 		"utf-8",
 	);
-	const filePath = path.join(cwd, ".pi", "kumpul", "agens", "agent.md");
+	const filePath = path.join(cwd, ".pi", "kumpul", "agents", "agent.md");
 	writeProjectAgentConfig(testAgent({ name: "agent", source: "package", systemPrompt: "", filePath: sourcePath }), filePath, {
 		model: "",
 		extensions: [],
@@ -673,7 +702,7 @@ Prompt.
 `,
 		"utf-8",
 	);
-	const filePath = path.join(cwd, ".pi", "kumpul", "agens", "agent.md");
+	const filePath = path.join(cwd, ".pi", "kumpul", "agents", "agent.md");
 	writeProjectAgentConfig(testAgent({ name: "agent", model: "", thinking: "", filePath: sourcePath, systemPrompt: "Prompt.\n" }), filePath, {
 		tools: ["read", "grep"],
 	});
@@ -937,8 +966,8 @@ if (thinkingIdx < 0 || process.argv[thinkingIdx + 1] !== "off") {
   process.exit(2);
 }
 const extensionArgs = process.argv.filter((arg, index) => process.argv[index - 1] === "--extension");
-if (!extensionArgs.some((arg) => arg.includes("pi-cursor-sdk"))) {
-  console.error("missing inherited cursor provider", JSON.stringify(process.argv));
+if (extensionArgs.some((arg) => arg.includes("pi-cursor-sdk"))) {
+  console.error("unexpected implicit cursor provider", JSON.stringify(process.argv));
   process.exit(2);
 }
 console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "ok" }] } }));

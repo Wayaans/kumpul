@@ -41,6 +41,10 @@ export interface NamedResourceOption {
 	path: string;
 }
 
+export interface ResourceDiscoveryOptions {
+	includeProject?: boolean;
+}
+
 interface SourceInfoLike {
 	path?: string;
 	source?: string;
@@ -159,12 +163,15 @@ export function resolveNamedExtension(
 	name: string,
 	extensionNamePaths: ExtensionNamePaths = new Map(),
 	cwd: string = process.cwd(),
+	options: ResourceDiscoveryOptions = { includeProject: true },
 ): string | undefined {
 	const candidates: string[] = [];
-	addProjectExtensionCandidates(candidates, cwd, name);
-	for (const candidate of candidates) {
-		const resolved = existingFile(candidate);
-		if (resolved) return resolved;
+	if (options.includeProject !== false) {
+		addProjectExtensionCandidates(candidates, cwd, name);
+		for (const candidate of candidates) {
+			const resolved = existingFile(candidate);
+			if (resolved) return resolved;
+		}
 	}
 
 	const fromPiMetadata = existingFile(extensionNamePaths.get(name));
@@ -211,12 +218,15 @@ export function resolveNamedSkill(
 	name: string,
 	skillPaths: SkillPaths = new Map(),
 	cwd: string = process.cwd(),
+	options: ResourceDiscoveryOptions = { includeProject: true },
 ): string | undefined {
 	const candidates: string[] = [];
-	addProjectSkillCandidates(candidates, cwd, name);
-	for (const candidate of candidates) {
-		const resolved = existingFile(candidate);
-		if (resolved) return resolved;
+	if (options.includeProject !== false) {
+		addProjectSkillCandidates(candidates, cwd, name);
+		for (const candidate of candidates) {
+			const resolved = existingFile(candidate);
+			if (resolved) return resolved;
+		}
 	}
 
 	const fromPiMetadata = existingFile(skillPaths.get(name));
@@ -260,16 +270,18 @@ export function resolveNamedExtensions(
 	names: string[] | undefined,
 	extensionNamePaths: ExtensionNamePaths = new Map(),
 	cwd: string = process.cwd(),
+	options: ResourceDiscoveryOptions = { includeProject: true },
 ): { paths: string[]; unresolved: string[] } {
-	return resolveNamedList(names, (name) => resolveNamedExtension(name, extensionNamePaths, cwd));
+	return resolveNamedList(names, (name) => resolveNamedExtension(name, extensionNamePaths, cwd, options));
 }
 
 export function resolveNamedSkills(
 	names: string[] | undefined,
 	skillPaths: SkillPaths = new Map(),
 	cwd: string = process.cwd(),
+	options: ResourceDiscoveryOptions = { includeProject: true },
 ): { paths: string[]; unresolved: string[] } {
-	return resolveNamedList(names, (name) => resolveNamedSkill(name, skillPaths, cwd));
+	return resolveNamedList(names, (name) => resolveNamedSkill(name, skillPaths, cwd, options));
 }
 
 function addExtensionOptionsFromDir(
@@ -327,9 +339,10 @@ export function discoverSelectableExtensionOptions(
 	tools: ToolInfo[] = [],
 	commands: CommandInfoLike[] = [],
 	cwd: string = process.cwd(),
+	discoveryOptions: ResourceDiscoveryOptions = { includeProject: true },
 ): NamedResourceOption[] {
 	const options = new Map<string, NamedResourceOption>();
-	addProjectExtensionOptions(cwd, options);
+	if (discoveryOptions.includeProject !== false) addProjectExtensionOptions(cwd, options);
 	for (const [name, filePath] of collectNamedExtensionPaths(tools, commands)) {
 		addOption(options, name, filePath, "loaded");
 	}
@@ -372,9 +385,10 @@ function addProjectSkillOptions(cwd: string, options: Map<string, NamedResourceO
 export function discoverSelectableSkillOptions(
 	commands: CommandInfoLike[] = [],
 	cwd: string = process.cwd(),
+	discoveryOptions: ResourceDiscoveryOptions = { includeProject: true },
 ): NamedResourceOption[] {
 	const options = new Map<string, NamedResourceOption>();
-	addProjectSkillOptions(cwd, options);
+	if (discoveryOptions.includeProject !== false) addProjectSkillOptions(cwd, options);
 	for (const [name, filePath] of collectSkillPaths(commands)) addOption(options, name, filePath, "loaded");
 	addSkillOptionsFromDir(GLOBAL_SKILLS_DIR, "global", options);
 	addSkillOptionsFromDir(LEGACY_GLOBAL_SKILLS_DIR, "global", options);
