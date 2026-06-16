@@ -2,7 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentResult, ToolEvent } from "./types.ts";
-import { displayAgentName, MAX_TOOLS_COLLAPSED } from "./types.ts";
+import { displayAgentLabel, MAX_TOOLS_COLLAPSED, sanitizeDisplayText } from "./types.ts";
 import {
 	formatContextUsage,
 	formatDuration,
@@ -85,7 +85,7 @@ export function renderAgentProgress(
 	const stats = `${prog.toolCount} tools · ${formatDuration(prog.durationMs)}`;
 	const modelStr = r.model ? theme.fg("dim", ` (${r.model})`) : "";
 	addLine(
-		`${icon} ${theme.fg("toolTitle", theme.bold(displayAgentName(r)))}${modelStr} — ${theme.fg("dim", stats)}`,
+		`${icon} ${theme.fg("toolTitle", theme.bold(displayAgentLabel(r, "progress")))}${modelStr} — ${theme.fg("dim", stats)}`,
 	);
 
 	const renderToolRow = (
@@ -154,7 +154,7 @@ export function renderAgentProgress(
 	}
 
 	if (prog.error) {
-		addLine(theme.fg("error", `Error: ${prog.error}`));
+		addLine(theme.fg("error", `Error: ${sanitizeDisplayText(prog.error)}`));
 	}
 
 	return c;
@@ -165,14 +165,13 @@ export function renderSubagentCall(
 	theme: Theme,
 	context: { expanded: boolean; lastComponent?: unknown },
 ) {
-	const label = args.agent ? displayAgentName({ agent: args.agent, alias: args.alias }) : undefined;
+	const label = args.agent ? displayAgentLabel({ agent: args.agent, alias: args.alias }, "tool-call") : undefined;
 	if (!context.expanded) {
 		if (!label) {
 			return new Text(theme.fg("toolTitle", theme.bold("subagent")), 0, 0);
 		}
-		const taskPreview = args.task
-			? (args.task.length > 60 ? args.task.slice(0, 60) + "…" : args.task).replace(/\n/g, " ")
-			: "";
+		const taskText = args.task ? sanitizeDisplayText(args.task.replace(/\n/g, " ")) : "";
+		const taskPreview = taskText ? (taskText.length > 60 ? taskText.slice(0, 60) + "…" : taskText) : "";
 		return new Text(
 			`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", label)} ${theme.fg("dim", taskPreview)}`,
 			0,
@@ -185,11 +184,11 @@ export function renderSubagentCall(
 			? (context.lastComponent.clear(), context.lastComponent)
 			: new Container();
 	const agentLabel = label ? ` ${theme.fg("accent", label)}` : "";
-	const cwdLabel = args.cwd ? theme.fg("dim", ` (cwd: ${args.cwd})`) : "";
+	const cwdLabel = args.cwd ? theme.fg("dim", ` (cwd: ${sanitizeDisplayText(args.cwd)})`) : "";
 	c.addChild(new Text(`${theme.fg("toolTitle", theme.bold("subagent"))}${agentLabel}${cwdLabel}`, 0, 0));
 	if (args.task) {
 		c.addChild(new Spacer(1));
-		c.addChild(new Text(theme.fg("text", args.task), 0, 0));
+		c.addChild(new Text(theme.fg("text", sanitizeDisplayText(args.task)), 0, 0));
 	}
 	return c;
 }
@@ -204,7 +203,7 @@ export function renderSubagentResult(
 	if (!details?.results?.length) {
 		const t = result.content[0];
 		const text = t?.type === "text" ? t.text : "(no output)";
-		return new Text((text || "").slice(0, 200), 0, 0);
+		return new Text(sanitizeDisplayText(text || "").slice(0, 200), 0, 0);
 	}
 
 	const w = getTermWidth() - 4;

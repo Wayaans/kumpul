@@ -43,10 +43,26 @@ export interface ToolEvent {
 	children?: AgentResult[];
 }
 
-/** Display label for a subagent run; falls back to registry `agent` name. */
-export function displayAgentName(r: { agent: string; alias?: string }): string {
-	return r.alias ?? r.agent;
+export type AgentDisplaySurface = "tool-call" | "progress" | "error";
+
+export function containsControlCharacters(s: string): boolean {
+	return /[\u0000-\u001f\u007f-\u009f]/.test(s);
 }
+
+export function sanitizeDisplayText(s: string): string {
+	return s.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+}
+
+function sanitizeAliasForDisplay(alias: string | undefined): string | undefined {
+	const sanitized = alias ? sanitizeDisplayText(alias).trim() : undefined;
+	return sanitized || undefined;
+}
+
+/** Display label for a subagent run on a specific UI/error surface. */
+export function displayAgentLabel(r: { agent: string; alias?: string }, surface: AgentDisplaySurface): string {
+	return surface === "progress" ? sanitizeDisplayText(r.agent) : sanitizeAliasForDisplay(r.alias) ?? sanitizeDisplayText(r.agent);
+}
+
 
 export interface AgentProgress {
 	agent: string;

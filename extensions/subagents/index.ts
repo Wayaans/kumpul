@@ -16,20 +16,18 @@ import {
 } from "./render.ts";
 import { formatDuration, formatSubagentFailure, resolveEffectiveAgent, runSubagent, Semaphore } from "./spawn.ts";
 import { collectNamedExtensionPaths, collectSkillPaths, collectToolExtensionPaths } from "./resolve-tools.ts";
-import { parseModelRef, type AgentResult, type ExtensionConfig, type SubagentDetails } from "./types.ts";
+import { containsControlCharacters, parseModelRef, sanitizeDisplayText, type AgentResult, type ExtensionConfig, type SubagentDetails } from "./types.ts";
 
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
 const CONFIG_PATH = path.join(EXTENSION_DIR, "config.json");
 const DEFAULT_MAX_CONCURRENCY = 4;
-const MAX_ALIAS_LENGTH = 64;
-
 export function normalizeSubagentAlias(raw: unknown): string | undefined {
 	if (raw === undefined || raw === null) return undefined;
 	if (typeof raw !== "string") throw new Error("subagent alias must be a string");
 	const trimmed = raw.trim();
 	if (!trimmed) throw new Error("subagent alias must not be empty");
-	if (trimmed.length > MAX_ALIAS_LENGTH) {
-		throw new Error(`subagent alias must be at most ${MAX_ALIAS_LENGTH} characters`);
+	if (containsControlCharacters(trimmed)) {
+		throw new Error("subagent alias must not contain control characters");
 	}
 	return trimmed;
 }
@@ -97,14 +95,14 @@ export default function (pi: ExtensionAPI): void {
 		}),
 
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const cwd = sanitizeDiscoveryCwd(params.cwd ?? ctx.cwd);
-			loadAgents(cwd);
-
 			if (!params.agent || !params.task) {
 				throw new Error(
 					"`subagent` requires both `agent` and `task`. To fan out work, emit multiple `subagent` tool calls in the same turn — they run in parallel.",
 				);
 			}
+			const alias = normalizeSubagentAlias(params.alias);
+			const cwd = sanitizeDiscoveryCwd(params.cwd ?? ctx.cwd);
+			loadAgents(cwd);
 
 			const uiConfig = loadMergedSubagentsUiConfig(cwd);
 			if (!uiConfig.enabled) {
@@ -118,10 +116,8 @@ export default function (pi: ExtensionAPI): void {
 						.filter((a) => isAgentSpawnEnabled(a.name, uiConfig))
 						.map((a) => a.name)
 						.join(", ") || "none";
-				throw new Error(`Unknown or disabled agent: ${params.agent}. Available agents: ${available}`);
+				throw new Error(`Unknown or disabled agent: ${sanitizeDisplayText(params.agent)}. Available agents: ${available}`);
 			}
-
-			const alias = normalizeSubagentAlias(params.alias);
 
 			const inherited = {
 				model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "",

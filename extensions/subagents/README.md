@@ -6,8 +6,8 @@ Isolated child `pi` processes with live TUI progress (tool log, nested children,
 
 | Agent | Tools | Purpose |
 |-------|-------|---------|
-| **agent** | read, write, edit, safe_bash, find_docs, fetch_content | General-purpose implementer prompt; model/thinking inherit from parent |
-| **reviewer** | read, find, ls, find_docs, fetch_content | Read-only code review prompt; model/thinking inherit from parent |
+| **agent** | read, write, edit, safe_bash, find, grep, ls, find_docs, fetch_content | General-purpose implementer prompt; pinned to `openai-codex/gpt-5.3-codex-spark`, `medium` thinking |
+| **reviewer** | read, find, ls, find_docs, fetch_content | Read-only code review prompt; pinned to `openai-codex/gpt-5.4-mini`, `high` thinking |
 
 ## Usage
 
@@ -25,7 +25,7 @@ Optional `alias` labels a run in the TUI without changing which agent config run
 }
 ```
 
-`agent` still resolves the registry entry and spawn allowlist; `alias` is display-only (progress rows, tool call header, nested children, errors). Omit `alias` to show the real agent name.
+`agent` still resolves the registry entry and spawn allowlist. `alias` is display-only: the tool call header uses it to show the run's purpose, and error messages use it for easier debugging. Progress/result rows with the status icon show the real agent name (`agent` or `reviewer`) so aliases do not hide which subagent type ran. Omit `alias` to show the real agent name everywhere.
 
 Fan out with multiple `subagent` calls in one turn. Concurrency cap: `config.json` → `maxConcurrency` (default 4, must be >= 1). Nested subagents are capped by `PI_SUBAGENT_DEPTH` (max 2).
 
@@ -41,7 +41,7 @@ Add markdown with YAML frontmatter:
 
 Project agents in `.pi/kumpul/agens/` are loaded automatically and override package/global agents by name. The `/subagents` setup UI writes changes there, so package defaults stay unchanged.
 
-Required frontmatter: `name`, `description`, `tools`; optional frontmatter: `model`, `thinking`, `subagent_agents`, `extensions`, `skills`. Invalid files are skipped with a diagnostic. `tools` and `subagent_agents` must be comma-separated tool-safe identifiers; `extensions` and `skills` must be comma-separated canonical names (`lower-kebab-case`); `model` must be empty or `provider/model`; empty `model` inherits the parent agent's current model; `thinking` must be empty or one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`; empty `thinking` inherits the parent thinking level. The child receives its effective model as both active `--model` and child `--models` scope so global model cycling settings do not leak unrelated provider warnings into subagent runs.
+Required frontmatter: `name`, `description`, `tools`; optional frontmatter: `model`, `thinking`, `subagent_agents`, `extensions`, `skills`. Invalid files are skipped with a diagnostic. `tools` and `subagent_agents` must be comma-separated tool-safe identifiers; `extensions` and `skills` must be comma-separated canonical names (`lower-kebab-case`); `model` must be empty or `provider/model`; empty `model` inherits the parent agent's current model; `thinking` must be empty or one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`; empty `thinking` inherits the parent thinking level. Package built-ins are pinned by default, but custom, global, and project override agents can leave `model` or `thinking` blank to inherit. The child receives its effective model as both active `--model` and child `--models` scope so global model cycling settings do not leak unrelated provider warnings into subagent runs.
 
 Child spawns keep discovery disabled with `--no-extensions` and `--no-skills`. Use `extensions` as an explicit allowlist of extension names to load by name, not path:
 

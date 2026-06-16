@@ -23,7 +23,7 @@ import {
 import { parseCursorThinkingActivity } from "../subagents/cursor-progress.ts";
 import { buildPiArgs, extractToolArgsPreview, formatSubagentFailure, MAX_SUBAGENT_DEPTH, progressSignature, resolveEffectiveAgent, runSubagent } from "../subagents/spawn.ts";
 import { renderSubagentCall, toolsToShow } from "../subagents/render.ts";
-import { displayAgentName, MAX_TOOLS_COLLAPSED } from "../subagents/types.ts";
+import { MAX_TOOLS_COLLAPSED } from "../subagents/types.ts";
 import { isDangerousBashCommand } from "../subagents/tools/safe-bash.ts";
 import { displayModelValue, displayThinkingValue } from "../subagents/setup-ui.ts";
 import {
@@ -89,15 +89,19 @@ test("resolveCustomToolExtension finds kumpul tools", () => {
 	assert.ok(resolveCustomToolExtension("subagent")?.endsWith("subagents/index.ts"));
 });
 
-test("discoverFileAgents keeps package prompts while clearing model and allowlists", () => withoutSubagentAllowlist(() => {
+test("discoverFileAgents keeps package builtins pinned by default", () => withoutSubagentAllowlist(() => {
 	const agents = discoverFileAgents(tempDir("kumpul-subagents-package-defaults-"));
 	const names = agents.map((a) => a.name);
 	assert.ok(names.includes("agent"));
 	assert.ok(names.includes("reviewer"));
 	const agent = agents.find((a) => a.name === "agent");
+	const reviewer = agents.find((a) => a.name === "reviewer");
 	assert.equal(agent?.source, "package");
-	assert.equal(agent?.model, "");
-	assert.equal(agent?.thinking, "");
+	assert.equal(agent?.model, "openai-codex/gpt-5.3-codex-spark");
+	assert.equal(agent?.thinking, "medium");
+	assert.equal(reviewer?.source, "package");
+	assert.equal(reviewer?.model, "openai-codex/gpt-5.4-mini");
+	assert.equal(reviewer?.thinking, "high");
 	assert.match(agent?.systemPrompt ?? "", /You are an agent/);
 	assert.equal(agent?.extensions, undefined);
 	assert.equal(agent?.skills, undefined);
@@ -815,6 +819,63 @@ test("subagents extension registers without throwing", () => {
 	assert.doesNotThrow(() => subagentsExtension(pi));
 });
 
+test("execute sanitizes unknown agent names in errors", async () => withoutSubagentAllowlistAsync(async () => {
+	type RegisteredSubagentTool = {
+		execute(
+			toolCallId: string,
+			params: { agent: string; task: string; alias?: string; cwd?: string },
+			signal: AbortSignal | undefined,
+			onUpdate: undefined,
+			ctx: { cwd: string },
+		): Promise<unknown>;
+	};
+	let registered: RegisteredSubagentTool | undefined;
+	const pi = {
+		on() {},
+		registerCommand() {},
+		registerMessageRenderer() {},
+		registerTool(tool: unknown) {
+			registered = tool as RegisteredSubagentTool;
+		},
+		getActiveTools() {
+			return [];
+		},
+		getAllTools() {
+			return [];
+		},
+		getCommands() {
+			return [];
+		},
+		setActiveTools() {},
+		sendMessage() {},
+		exec: async () => ({ code: 0, stdout: "", stderr: "" }),
+	} as unknown as ExtensionAPI;
+
+	subagentsExtension(pi);
+	assert.ok(registered);
+	await assert.rejects(
+		registered.execute("tool-call", { agent: "bad\x1bagent", task: "task" }, undefined, undefined, {
+			cwd: process.cwd(),
+		}),
+		(error: unknown) => {
+			assert.ok(error instanceof Error);
+			assert.match(error.message, /Unknown or disabled agent: badagent/);
+			assert.doesNotMatch(error.message, /\x1b/);
+			return true;
+		},
+	);
+	await assert.rejects(
+		registered.execute(
+			"tool-call",
+			{ agent: "agent", alias: "bad\x1balias", task: "task", cwd: path.join(process.cwd(), "missing-cwd") },
+			undefined,
+			undefined,
+			{ cwd: process.cwd() },
+		),
+		/subagent alias must not contain control characters/,
+	);
+}));
+
 test("runSubagent resolves on agent_end even when child process stays alive", async () => withoutSubagentAllowlistAsync(async () => {
 	const binDir = tempDir("kumpul-subagents-bin-");
 	const fakePi = path.join(binDir, "pi");
@@ -854,7 +915,7 @@ setInterval(() => {}, 1000);
 	}
 }));
 
-test("execute passes and scopes parent model when agent model is empty", async () => withoutSubagentAllowlistAsync(async () => {
+test("execute inherits and scopes parent model when custom agent model is empty", async () => withoutSubagentAllowlistAsync(async () => {
 	const binDir = tempDir("kumpul-subagents-bin-");
 	const fakePi = path.join(binDir, "pi");
 	fs.writeFileSync(

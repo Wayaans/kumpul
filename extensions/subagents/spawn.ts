@@ -9,8 +9,7 @@ import {
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig, AgentProgress, AgentResult } from "./types.ts";
-import { displayAgentName, isCursorModel } from "./types.ts";
-import { MAX_TOOLS_COLLAPSED } from "./types.ts";
+import { displayAgentLabel, isCursorModel, sanitizeDisplayText } from "./types.ts";
 import {
 	parseCursorThinkingActivity,
 	previewFromThinkingDelta,
@@ -79,7 +78,7 @@ function extractTextFromContent(content: unknown): string {
 }
 
 function flatten(s: string): string {
-	return s.replace(/\s+/g, " ").trim();
+	return sanitizeDisplayText(s).replace(/\s+/g, " ").trim();
 }
 
 const MAX_ARG_PREVIEW = 4000;
@@ -91,11 +90,15 @@ export function extractToolArgsPreview(args: Record<string, unknown>): string {
 	if (args.query) return `"${cap(flatten(String(args.query)))}"`;
 	if (args.url) return cap(flatten(String(args.url)));
 	if (args.pattern) return cap(flatten(String(args.pattern)));
-	if (args.alias) return flatten(String(args.alias));
-	if (args.agent) return flatten(String(args.agent));
+	if (args.alias || args.agent) {
+		return displayAgentLabel(
+			{ agent: args.agent ? String(args.agent) : "?", alias: typeof args.alias === "string" ? args.alias : undefined },
+			"tool-call",
+		);
+	}
 	if (Array.isArray(args.tasks)) {
 		const names = (args.tasks as Array<{ agent?: string; alias?: string }>)
-			.map((t) => t?.alias ?? t?.agent ?? "?")
+			.map((t) => displayAgentLabel({ agent: t?.agent ?? "?", alias: t?.alias }, "tool-call"))
 			.join(", ");
 		return `parallel(${names})`;
 	}
@@ -236,22 +239,25 @@ export async function buildPiArgs(
 }
 
 export function progressSignature(p: AgentProgress): string {
-	const tail = p.recentTools.slice(-MAX_TOOLS_COLLAPSED);
-	const tailSig = tail
+	const toolSig = p.recentTools
 		.map((t) => {
-			const childSig =
-				t.children
-					?.map(
-						(c) =>
-							`${displayAgentName(c)}:${c.progress.status}:${c.progress.toolCount}:${c.progress.recentTools.length}`,
-					)
-					.join(";") ?? "";
-			return `${t.toolCallId}|${t.status}|${t.tool}|${t.args.slice(0, 80)}|${childSig}`;
+			const childSig = t.children?.map((c) => progressSignature(c.progress)).join(";") ?? "";
+			return `${t.toolCallId ?? ""}|${t.status}|${t.tool}|${t.args}|${childSig}`;
 		})
 		.join(",");
 	// Bucket duration so the parent TUI clock ticks without spamming every ms.
 	const durationBucket = Math.floor(p.durationMs / SUBAGENT_PROGRESS_HEARTBEAT_MS);
-	return `${p.toolCount}|${p.tokens}|${durationBucket}|${p.lastMessage.slice(0, 80)}|${tailSig}`;
+	return [
+		p.agent,
+		p.alias ?? "",
+		p.status,
+		p.toolCount,
+		p.tokens,
+		durationBucket,
+		p.lastMessage,
+		p.error ?? "",
+		toolSig,
+	].join("|");
 }
 
 /** Trailing throttle — always delivers the latest pending call. */
@@ -615,10 +621,10 @@ export async function runSubagent(
 
 export function formatSubagentFailure(result: AgentResult): string {
 	const parts = [
-		`Subagent ${displayAgentName(result)} failed with exit code ${result.exitCode}`,
-		result.progress.error ? `error: ${result.progress.error}` : undefined,
-		result.spawnError ? `spawn: ${result.spawnError}` : undefined,
-		result.stderr ? `stderr: ${result.stderr}` : undefined,
+		`Subagent ${displayAgentLabel(result, "error")} failed with exit code ${result.exitCode}`,
+		result.progress.error ? `error: ${sanitizeDisplayText(result.progress.error)}` : undefined,
+		result.spawnError ? `spawn: ${sanitizeDisplayText(result.spawnError)}` : undefined,
+		result.stderr ? `stderr: ${sanitizeDisplayText(result.stderr)}` : undefined,
 	].filter(Boolean);
 	return parts.join("\n");
 }

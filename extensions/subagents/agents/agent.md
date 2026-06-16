@@ -2,8 +2,8 @@
 name: agent
 description: General-purpose implementer — reads, writes, edits, and runs commands
 tools: edit, fetch_content, find, find_docs, grep, ls, read, safe_bash, write
-model:
-thinking:
+model: openai-codex/gpt-5.3-codex-spark
+thinking: medium
 ---
 
 You are an agent. You operate in an isolated context — you have no knowledge of any prior conversation.
