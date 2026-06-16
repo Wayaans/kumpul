@@ -1,6 +1,19 @@
 export type AgentSource = "package" | "user" | "project" | "dynamic";
 
+import { randomInt } from "node:crypto";
+
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+export const MYTH_ALIAS_NAMES = [
+	"achilles", "adonis", "aeneas", "apollo", "argos", "ariadne", "artemis", "atalanta",
+	"athena", "atlas", "calliope", "cassandra", "circe", "daedalus", "daphne", "demeter",
+	"dionysus", "echo", "hector", "helios", "hera", "heracles", "hermes", "medea",
+	"icarus", "iris", "orpheus", "perseus", "phoenix", "selene", "theseus",
+];
+
+export function generateSubagentAlias(): string {
+	return MYTH_ALIAS_NAMES[randomInt(MYTH_ALIAS_NAMES.length)]!;
+}
 
 export function parseModelRef(model: string): { provider: string; modelId: string } | null {
 	if (model === "") return null;
@@ -27,12 +40,12 @@ export interface AgentConfig {
 	systemPrompt: string;
 	filePath: string;
 	source: AgentSource;
-	/** When `subagent` is in tools, restrict spawn targets (enforced via PI_SUBAGENT_ALLOWED). */
-	subagentAgents?: string[];
 	/** Extra named extensions to load explicitly while extension discovery stays disabled. */
 	extensions?: string[];
 	/** Named skills to load explicitly while skill discovery stays disabled. */
 	skills?: string[];
+	/** Named skills to invoke at child startup. Active skills are loaded automatically. */
+	activeSkills?: string[];
 }
 
 export interface ToolEvent {
@@ -59,12 +72,13 @@ function sanitizeAliasForDisplay(alias: string | undefined): string | undefined 
 }
 
 /** Display label for a subagent run on a specific UI/error surface. */
-export function displayAgentLabel(r: { agent: string; alias?: string }, surface: AgentDisplaySurface): string {
-	return surface === "progress" ? sanitizeDisplayText(r.agent) : sanitizeAliasForDisplay(r.alias) ?? sanitizeDisplayText(r.agent);
+export function displayAgentLabel(r: { agent: string; alias?: string }, _surface: AgentDisplaySurface): string {
+	return sanitizeAliasForDisplay(r.alias) ?? sanitizeDisplayText(r.agent);
 }
 
 
 export interface AgentProgress {
+	id?: string;
 	agent: string;
 	/** Optional display label; registry name stays in `agent`. */
 	alias?: string;
@@ -79,6 +93,7 @@ export interface AgentProgress {
 }
 
 export interface AgentResult {
+	id?: string;
 	agent: string;
 	/** Optional display label; registry name stays in `agent`. */
 	alias?: string;

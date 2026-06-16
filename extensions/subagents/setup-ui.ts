@@ -26,7 +26,6 @@ import {
 	type AgentConfigPatch,
 } from "./agent-io.ts";
 import {
-	isAgentSpawnEnabled,
 	loadMergedSubagentsUiConfig,
 	updateProjectSubagentsUiConfig,
 	type SubagentsUiConfig,
@@ -57,7 +56,7 @@ type Screen =
 	| { type: "tools"; agent: AgentConfig }
 	| { type: "extensions"; agent: AgentConfig }
 	| { type: "skills"; agent: AgentConfig }
-	| { type: "subagentAgents"; agent: AgentConfig }
+	| { type: "activeSkills"; agent: AgentConfig }
 	| { type: "model"; agent: AgentConfig };
 
 interface ModelRow {
@@ -79,9 +78,8 @@ function sourceLabel(source: AgentConfig["source"]): string {
 	}
 }
 
-function agentSummary(agent: AgentConfig, uiConfig: SubagentsUiConfig): string {
-	const spawn = isAgentSpawnEnabled(agent.name, uiConfig) ? "spawnable" : "spawn disabled";
-	return `${sourceLabel(agent.source)} · ${displayModelValue(agent.model)} · ${displayThinkingValue(agent.thinking)} · ${spawn}`;
+function agentSummary(agent: AgentConfig, _uiConfig: SubagentsUiConfig): string {
+	return `${sourceLabel(agent.source)} · ${displayModelValue(agent.model)} · ${displayThinkingValue(agent.thinking)}`;
 }
 
 function pathBasename(filePath: string): string {
@@ -89,7 +87,7 @@ function pathBasename(filePath: string): string {
 	return parts[parts.length - 1] ?? filePath;
 }
 
-type AllowlistKey = "extensions" | "skills";
+type AllowlistKey = "extensions" | "skills" | "activeSkills";
 
 function draftAllowlist(agent: AgentConfig, draft: AgentConfigPatch, key: AllowlistKey): string[] {
 	return draft[key] ?? agent[key] ?? [];
@@ -242,7 +240,13 @@ export async function showSubagentsSetup(
 	let fileAgents: AgentConfig[] = [];
 	const includeProject = isProjectTrusted(ctx);
 	const refreshFileAgents = () => {
-		fileAgents = discoverFileAgents(ctx.cwd, { includeProject }).filter((agent) => agent.source !== "dynamic");
+		try {
+			fileAgents = discoverFileAgents(ctx.cwd, { includeProject }).filter((agent) => agent.source !== "dynamic");
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			ctx.ui.notify(`Unable to load project subagent override; showing package default. ${message}`, "warning");
+			fileAgents = discoverFileAgents(ctx.cwd, { includeProject: false }).filter((agent) => agent.source !== "dynamic");
+		}
 	};
 	refreshFileAgents();
 
@@ -252,6 +256,11 @@ export async function showSubagentsSetup(
 	}
 
 	let uiConfig = loadMergedSubagentsUiConfig(ctx.cwd, { includeProject });
+	const requireTrustedProject = (): boolean => {
+		if (includeProject) return true;
+		ctx.ui.notify("Trust this project before saving subagent settings. Project overrides are ignored while untrusted.", "warning");
+		return false;
+	};
 	let saved = false;
 	const drafts = new Map<string, { patch: AgentConfigPatch; dirty: boolean }>();
 	const screenStack: Screen[] = [{ type: "home" }];
@@ -307,8 +316,8 @@ export async function showSubagentsSetup(
 						return buildResourceScreen(screen.agent, "extensions");
 					case "skills":
 						return buildResourceScreen(screen.agent, "skills");
-					case "subagentAgents":
-						return buildSubagentAgentsScreen(screen.agent);
+					case "activeSkills":
+						return buildResourceScreen(screen.agent, "activeSkills");
 					case "model":
 						return buildModelScreen(screen.agent);
 				}
@@ -338,6 +347,11 @@ export async function showSubagentsSetup(
 					getSettingsListTheme(),
 					(id, newValue) => {
 						if (id === "extension") {
+							if (!requireTrustedProject()) {
+								list.updateValue("extension", uiConfig.enabled ? "enabled" : "disabled");
+								tui.requestRender();
+								return;
+							}
 							const enabled = newValue === "enabled";
 							uiConfig = { ...uiConfig, enabled };
 							updateProjectSubagentsUiConfig(ctx.cwd, { enabled });
@@ -362,7 +376,9 @@ export async function showSubagentsSetup(
 					shell: compactShell(
 						theme,
 						"Subagents",
-						uiConfig.enabled ? `Extension enabled · ${RELOAD_HINT}` : `Extension disabled · ${RELOAD_HINT}`,
+						includeProject
+							? (uiConfig.enabled ? `Extension enabled · ${RELOAD_HINT}` : `Extension disabled · ${RELOAD_HINT}`)
+							: "Project untrusted · settings are read-only until trusted",
 						body,
 						"enter open · type to search · esc close",
 					),
@@ -372,26 +388,19 @@ export async function showSubagentsSetup(
 
 			const buildAgentScreen = (agent: AgentConfig) => {
 				const entry = getDraft(agent);
-				const spawnEnabled = !uiConfig.disabledAgents.has(agent.name);
 				const commands = pi.getCommands();
 				const extensionOptions = discoverSelectableExtensionOptions(pi.getAllTools(), commands, ctx.cwd, { includeProject });
 				const skillOptions = discoverSelectableSkillOptions(commands, ctx.cwd, { includeProject });
 				const currentTools = entry.patch.tools ?? agent.tools;
 				const currentExtensions = draftAllowlist(agent, entry.patch, "extensions");
 				const currentSkills = draftAllowlist(agent, entry.patch, "skills");
-				const currentSubagentAgents = entry.patch.subagentAgents ?? agent.subagentAgents ?? [];
+				const currentActiveSkills = draftAllowlist(agent, entry.patch, "activeSkills");
 				const missingExtensions = missingAllowlistNames(currentExtensions, extensionOptions);
 				const missingSkills = missingAllowlistNames(currentSkills, skillOptions);
+				const missingActiveSkills = missingAllowlistNames(currentActiveSkills, skillOptions);
 				const skillsEditable = canEditSkills(currentTools);
 
 				const items: SettingItem[] = [
-					{
-						id: "spawn",
-						label: "Spawn",
-						description: `Allow subagent tool to invoke ${agent.name}. ${RELOAD_HINT}`,
-						currentValue: spawnEnabled ? "enabled" : "disabled",
-						values: ["enabled", "disabled"],
-					},
 					{
 						id: "tools",
 						label: "Tools",
@@ -399,17 +408,6 @@ export async function showSubagentsSetup(
 						currentValue: `${(entry.patch.tools ?? agent.tools).length} selected`,
 						values: ["open"],
 					},
-					...(currentTools.includes("subagent")
-						? [
-							{
-								id: "subagentAgents",
-								label: "Subagent agents",
-								description: "Bounded nested-spawn allowlist required when subagent is enabled.",
-								currentValue: `${currentSubagentAgents.length} selected`,
-								values: ["open"],
-							},
-						]
-						: []),
 					{
 						id: "extensions",
 						label: "Extensions",
@@ -424,6 +422,13 @@ export async function showSubagentsSetup(
 								label: "Skills",
 								description: "Explicit child skill allowlist.",
 								currentValue: allowlistSummary(currentSkills, skillOptions),
+								values: ["open"],
+							},
+							{
+								id: "activeSkills",
+								label: "Active skills",
+								description: "Skills to invoke at subagent startup.",
+								currentValue: allowlistSummary(currentActiveSkills, skillOptions),
 								values: ["open"],
 							},
 						]
@@ -443,7 +448,7 @@ export async function showSubagentsSetup(
 					{
 						id: "save",
 						label: "Save",
-						description: `${agent.source === "project" ? pathBasename(agent.filePath) : `.pi/kumpul/agents/${agent.name}.md`} · ${RELOAD_HINT}`,
+						description: `${agent.source === "project" ? pathBasename(agent.filePath) : ".pi/kumpul/subagent.md"} · ${RELOAD_HINT}`,
 						currentValue: entry.dirty ? "save changes" : "up to date",
 						values: ["save changes", "up to date"],
 					},
@@ -454,24 +459,8 @@ export async function showSubagentsSetup(
 					Math.min(items.length, LIST_VISIBLE),
 					getSettingsListTheme(),
 					(id, newValue) => {
-						if (id === "spawn") {
-							const next = new Set(uiConfig.disabledAgents);
-							if (newValue === "enabled") next.delete(agent.name);
-							else next.add(agent.name);
-							uiConfig = { ...uiConfig, disabledAgents: next };
-							updateProjectSubagentsUiConfig(ctx.cwd, { disabledAgents: next });
-							saved = true;
-							list.updateValue("spawn", newValue);
-							ctx.ui.notify(`${agent.name} spawn ${newValue}. ${RELOAD_HINT}`, "info");
-							tui.requestRender();
-							return;
-						}
 						if (id === "tools") {
 							pushScreen({ type: "tools", agent });
-							return;
-						}
-						if (id === "subagentAgents") {
-							pushScreen({ type: "subagentAgents", agent });
 							return;
 						}
 						if (id === "extensions") {
@@ -480,6 +469,10 @@ export async function showSubagentsSetup(
 						}
 						if (id === "skills") {
 							pushScreen({ type: "skills", agent });
+							return;
+						}
+						if (id === "activeSkills") {
+							pushScreen({ type: "activeSkills", agent });
 							return;
 						}
 						if (id === "model") {
@@ -495,6 +488,11 @@ export async function showSubagentsSetup(
 							return;
 						}
 						if (id === "save" && newValue === "save changes" && entry.dirty) {
+							if (!requireTrustedProject()) {
+								list.updateValue("save", "save changes");
+								tui.requestRender();
+								return;
+							}
 							const error = saveAgentDraft(ctx.cwd, agent, entry.patch);
 							if (error) {
 								ctx.ui.notify(error, "error");
@@ -522,6 +520,7 @@ export async function showSubagentsSetup(
 				const warnings: string[] = [];
 				if (missingExtensions.length > 0) warnings.push(`extensions: ${missingExtensions.join(", ")}`);
 				if (missingSkills.length > 0) warnings.push(`skills: ${missingSkills.join(", ")}`);
+				if (missingActiveSkills.length > 0) warnings.push(`active skills: ${missingActiveSkills.join(", ")}`);
 				if (warnings.length > 0) {
 					body.addChild(new Text(`  ${theme.fg("warning", `Missing allowlist names preserved · ${warnings.join(" · ")}`)}`));
 				}
@@ -533,7 +532,7 @@ export async function showSubagentsSetup(
 				return {
 					shell: compactShell(
 						theme,
-						`Configure · ${agent.name}`,
+						"Configure subagent",
 						`${sourceLabel(agent.source)} · ${pathBasename(agent.filePath)}`,
 						body,
 						"enter change · esc back",
@@ -559,7 +558,7 @@ export async function showSubagentsSetup(
 					Math.min(items.length, LIST_VISIBLE),
 					getSettingsListTheme(),
 					(id, newValue) => {
-						const currentSkills = entry.patch.skills ?? agent.skills ?? [];
+						const currentSkills = [...(entry.patch.skills ?? agent.skills ?? []), ...(entry.patch.activeSkills ?? agent.activeSkills ?? [])];
 						if (newValue === "disabled" && selected.size === 1 && selected.has(id)) {
 							list.updateValue(id, "enabled");
 							ctx.ui.notify("Agents need at least one tool.", "warning");
@@ -575,9 +574,7 @@ export async function showSubagentsSetup(
 						if (newValue === "enabled") selected.add(id);
 						else selected.delete(id);
 						entry.patch.tools = [...selected].sort((a, b) => a.localeCompare(b));
-						if (id === "subagent" && newValue === "enabled" && !entry.patch.subagentAgents && !agent.subagentAgents) {
-							entry.patch.subagentAgents = [];
-						}
+		
 						entry.dirty = true;
 						tui.requestRender();
 					},
@@ -608,7 +605,7 @@ export async function showSubagentsSetup(
 				const current = draftAllowlist(agent, entry.patch, key);
 				return buildAllowlistPicker({
 					theme,
-					title: key === "extensions" ? "Extensions" : "Skills",
+					title: key === "extensions" ? "Extensions" : key === "activeSkills" ? "Active skills" : "Skills",
 					resourceName: key,
 					options,
 					current,
@@ -621,41 +618,6 @@ export async function showSubagentsSetup(
 				});
 			};
 
-			const buildSubagentAgentsScreen = (agent: AgentConfig) => {
-				const entry = getDraft(agent);
-				const selected = new Set(entry.patch.subagentAgents ?? agent.subagentAgents ?? []);
-				const options = fileAgents.map((a) => a.name).filter((name) => name !== agent.name).sort((a, b) => a.localeCompare(b));
-				const items: SettingItem[] = options.map((name) => ({
-					id: name,
-					label: name,
-					currentValue: selected.has(name) ? "enabled" : "disabled",
-					values: ["enabled", "disabled"],
-				}));
-
-				const list = new SettingsList(
-					items,
-					Math.min(items.length, LIST_VISIBLE),
-					getSettingsListTheme(),
-					(id, newValue) => {
-						if (newValue === "enabled") selected.add(id);
-						else selected.delete(id);
-						entry.patch.subagentAgents = [...selected].sort((a, b) => a.localeCompare(b));
-						entry.dirty = true;
-						tui.requestRender();
-					},
-					popScreen,
-					{ enableSearch: true },
-				);
-
-				const body = new Container();
-				if (options.length === 0) body.addChild(new Text(`  ${theme.fg("warning", "No other agents available for nested spawns.")}`));
-				body.addChild(list);
-
-				return {
-					shell: compactShell(theme, "Subagent agents", `${selected.size} selected`, body, "type to search · space toggle · esc back"),
-					inputTarget: list,
-				};
-			};
 
 			const buildModelScreen = (agent: AgentConfig) => {
 				const entry = getDraft(agent);

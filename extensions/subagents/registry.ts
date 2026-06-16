@@ -1,32 +1,33 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
-import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { parseModelRef, THINKING_LEVELS, type AgentConfig, type AgentSource } from "./types.ts";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { parseModelRef, THINKING_LEVELS, type AgentConfig } from "./types.ts";
 
-const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
-const PACKAGE_AGENTS_DIR = path.join(EXTENSION_DIR, "agents");
-const PROJECT_AGENTS_RELATIVE = path.join(".pi", "kumpul", "agents");
+const PROJECT_SUBAGENT_RELATIVE = path.join(".pi", "kumpul", "subagent.md");
 
 export interface AgentDiscoveryOptions {
 	includeProject?: boolean;
 }
 
-let agents: AgentConfig[] = [];
-const dynamicAgents = new Map<string, AgentConfig>();
-let lastDiscoverCwd = process.cwd();
+export const DEFAULT_AGENT_CONFIG: AgentConfig = {
+	name: "agent",
+	description: "General-purpose subagent template — follows the delegated task exactly",
+	tools: ["edit", "find", "find_docs", "grep", "ls", "read", "safe_bash", "write"],
+	model: "openai-codex/gpt-5.3-codex-spark",
+	thinking: "medium",
+	systemPrompt: `You are a subagent. You operate in an isolated context — you have no knowledge of any prior conversation.
 
-function getSubagentAllowlist(): string[] | undefined {
-	const raw = process.env.PI_SUBAGENT_ALLOWED;
-	if (!raw) return undefined;
-	const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
-	return list.length > 0 ? list : undefined;
-}
+Work efficiently and effectively to complete the assigned task. All necessary context must be provided in the task description. Follow the task instructions exactly.
 
-function passesAllowlist(name: string): boolean {
-	const allowlist = getSubagentAllowlist();
-	return !allowlist || allowlist.includes(name);
-}
+Guidelines:
+- Use \`safe_bash\` for running commands (tests, builds, installs, etc.)
+- Use \`find_docs\` for library/API documentation questions
+`,
+	filePath: "<package-default>",
+	source: "package",
+};
+
+let agent: AgentConfig = DEFAULT_AGENT_CONFIG;
 
 function diagnostic(message: string): void {
 	console.warn(`[subagents] ${message}`);
@@ -50,61 +51,31 @@ function isCanonicalResourceName(name: string): boolean {
 	return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name);
 }
 
-function validateAgentConfig(agent: AgentConfig): string | null {
-	if (typeof agent.name !== "string" || !agent.name || !isSafeName(agent.name)) {
-		return "name must be a non-empty tool-safe identifier";
-	}
-	if (typeof agent.description !== "string" || agent.description.trim() === "") {
-		return "description must be a non-empty string";
-	}
-	if (!Array.isArray(agent.tools) || agent.tools.length === 0) return "tools must be a non-empty comma-separated list";
-	if (agent.tools.some((tool) => typeof tool !== "string" || !tool || !isSafeName(tool))) {
-		return "tools contains an invalid tool name";
-	}
-	if (typeof agent.model !== "string") return "model must be a string";
-	if (agent.model !== "" && !parseModelRef(agent.model)) return "model must be empty or in provider/model form";
-	if (typeof agent.thinking !== "string" || (agent.thinking !== "" && !THINKING_LEVELS.includes(agent.thinking as never))) {
+function uniqueSorted(values: string[]): string[] {
+	return [...new Set(values)].sort((a, b) => a.localeCompare(b));
+}
+
+function validateAgentConfig(config: AgentConfig): string | null {
+	if (config.name !== "agent") return "name must be agent";
+	if (typeof config.description !== "string" || config.description.trim() === "") return "description must be a non-empty string";
+	if (!Array.isArray(config.tools) || config.tools.length === 0) return "tools must be a non-empty comma-separated list";
+	if (config.tools.some((tool) => typeof tool !== "string" || !tool || !isSafeName(tool))) return "tools contains an invalid tool name";
+	if (typeof config.model !== "string") return "model must be a string";
+	if (config.model !== "" && !parseModelRef(config.model)) return "model must be empty or in provider/model form";
+	if (typeof config.thinking !== "string" || (config.thinking !== "" && !THINKING_LEVELS.includes(config.thinking as never))) {
 		return `thinking must be empty or one of ${THINKING_LEVELS.join(", ")}`;
 	}
-	if (typeof agent.systemPrompt !== "string") return "system prompt must be a string";
-	if (typeof agent.filePath !== "string" || agent.filePath.trim() === "") return "filePath must be a non-empty string";
-	if (!["package", "user", "project", "dynamic"].includes(agent.source)) return "source is invalid";
-	if (agent.subagentAgents !== undefined && !Array.isArray(agent.subagentAgents)) {
-		return "subagent_agents must be a comma-separated list";
-	}
-	if (agent.tools.includes("subagent") && (!agent.subagentAgents || agent.subagentAgents.length === 0)) {
-		return "agents with the subagent tool must set bounded subagent_agents";
-	}
-	if (agent.subagentAgents?.some((name) => typeof name !== "string" || !isSafeName(name))) {
-		return "subagent_agents contains an invalid agent name";
-	}
-	if (agent.extensions !== undefined && !Array.isArray(agent.extensions)) {
-		return "extensions must be a comma-separated list";
-	}
-	if (agent.extensions?.some((name) => typeof name !== "string" || !isCanonicalResourceName(name))) {
-		return "extensions contains an invalid canonical extension name";
-	}
-	if (agent.skills !== undefined && !Array.isArray(agent.skills)) {
-		return "skills must be a comma-separated list";
-	}
-	if (agent.skills?.some((name) => typeof name !== "string" || !isCanonicalResourceName(name))) {
-		return "skills contains an invalid canonical skill name";
-	}
-	if (agent.skills && agent.skills.length > 0 && !agent.tools.includes("read")) {
-		return "agents with skills must include the read tool";
-	}
+	if (typeof config.systemPrompt !== "string") return "system prompt must be a string";
+	if (config.extensions?.some((name) => typeof name !== "string" || !isCanonicalResourceName(name))) return "extensions contains an invalid canonical extension name";
+	if (config.skills?.some((name) => typeof name !== "string" || !isCanonicalResourceName(name))) return "skills contains an invalid canonical skill name";
+	if (config.activeSkills?.some((name) => typeof name !== "string" || !isCanonicalResourceName(name))) return "active_skills contains an invalid canonical skill name";
+	const skills = [...(config.skills ?? []), ...(config.activeSkills ?? [])];
+	if (skills.length > 0 && !config.tools.includes("read")) return "agents with skills need read in tools so they can load SKILL.md files";
 	return null;
 }
 
-export function validateRegisteredAgent(config: AgentConfig): void {
-	const error = validateAgentConfig(config);
-	if (error) throw new Error(`Invalid agent ${config.name || "(unnamed)"}: ${error}`);
-}
-
 export function sanitizeDiscoveryCwd(cwd: string): string {
-	if (typeof cwd !== "string" || cwd.trim() === "") {
-		throw new Error("subagent cwd must be a non-empty string");
-	}
+	if (typeof cwd !== "string" || cwd.trim() === "") throw new Error("subagent cwd must be a non-empty string");
 	const resolved = path.resolve(cwd);
 	let real: string;
 	try {
@@ -122,56 +93,47 @@ export function sanitizeDiscoveryCwd(cwd: string): string {
 	return real;
 }
 
-export function getAgents(): AgentConfig[] {
-	return agents;
+function isDirectory(p: string): boolean {
+	try { return fs.statSync(p).isDirectory(); } catch { return false; }
 }
 
-export function registerAgent(config: Omit<AgentConfig, "source"> & Partial<Pick<AgentConfig, "source">>): void {
-	const agent: AgentConfig = { ...config, source: config.source ?? "dynamic" };
-	validateRegisteredAgent(agent);
-	if (!passesAllowlist(agent.name)) return;
-	if (agents.find((a) => a.name === agent.name) || dynamicAgents.has(agent.name)) {
-		throw new Error(`Agent already registered: ${agent.name}`);
+export function findProjectSubagentPath(cwd: string): string | null {
+	let currentDir = sanitizeDiscoveryCwd(cwd);
+	while (true) {
+		const candidate = path.join(currentDir, PROJECT_SUBAGENT_RELATIVE);
+		if (fs.existsSync(candidate)) return candidate;
+		const parentDir = path.dirname(currentDir);
+		if (parentDir === currentDir) return null;
+		currentDir = parentDir;
 	}
-	dynamicAgents.set(agent.name, agent);
-	rebuildAgentList();
 }
 
-export function unregisterAgent(name: string): void {
-	dynamicAgents.delete(name);
-	rebuildAgentList();
-}
-
-let lastDiscoveryOptions: AgentDiscoveryOptions = { includeProject: true };
-
-function rebuildAgentList(): void {
-	const fileAgents = discoverFileAgents(lastDiscoverCwd, lastDiscoveryOptions);
-	const map = new Map<string, AgentConfig>();
-	for (const agent of fileAgents) {
-		map.set(agent.name, agent);
+export function getProjectSubagentPath(cwd: string): string {
+	const existing = findProjectSubagentPath(cwd);
+	if (existing) return existing;
+	let currentDir = sanitizeDiscoveryCwd(cwd);
+	while (true) {
+		if (fs.existsSync(path.join(currentDir, ".git")) || isDirectory(path.join(currentDir, ".pi"))) {
+			return path.join(currentDir, PROJECT_SUBAGENT_RELATIVE);
+		}
+		const parentDir = path.dirname(currentDir);
+		if (parentDir === currentDir) return path.join(sanitizeDiscoveryCwd(cwd), PROJECT_SUBAGENT_RELATIVE);
+		currentDir = parentDir;
 	}
-	for (const agent of dynamicAgents.values()) {
-		map.set(agent.name, agent);
-	}
-	agents = Array.from(map.values());
 }
 
-export function loadAgents(cwd: string = process.cwd(), options: AgentDiscoveryOptions = { includeProject: true }): AgentConfig[] {
-	lastDiscoverCwd = sanitizeDiscoveryCwd(cwd);
-	lastDiscoveryOptions = options;
-	rebuildAgentList();
-	return agents;
-}
-
-export function parseAgentMarkdown(filePath: string, source: AgentSource = "user"): AgentConfig | null {
+export function parseSubagentMarkdown(filePath: string, source: "project" = "project"): AgentConfig | null {
 	let content: string;
 	try {
 		content = fs.readFileSync(filePath, "utf-8");
 	} catch (error) {
-		diagnostic(`Unable to read agent file ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+		diagnostic(`Unable to read subagent file ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
 		return null;
 	}
-
+	if (!content.trimStart().startsWith("---")) {
+		diagnostic(`Skipping invalid subagent file ${filePath}: missing frontmatter`);
+		return null;
+	}
 	let parsed: { frontmatter: Record<string, unknown>; body: string };
 	try {
 		parsed = parseFrontmatter<Record<string, unknown>>(content);
@@ -179,145 +141,83 @@ export function parseAgentMarkdown(filePath: string, source: AgentSource = "user
 		diagnostic(`Invalid frontmatter in ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
 		return null;
 	}
-
-	for (const field of ["model", "thinking", "subagent_agents"]) {
-		if (
-			Object.hasOwn(parsed.frontmatter, field) &&
-			parsed.frontmatter[field] !== null &&
-			parsed.frontmatter[field] !== undefined &&
-			typeof parsed.frontmatter[field] !== "string"
-		) {
-			diagnostic(`Skipping invalid agent file ${filePath}: ${field} must be a string`);
+	for (const field of ["model", "thinking", "extensions", "skills", "active_skills", "tools", "description"]) {
+		if (Object.hasOwn(parsed.frontmatter, field) && parsed.frontmatter[field] != null && typeof parsed.frontmatter[field] !== "string") {
+			diagnostic(`Skipping invalid subagent file ${filePath}: ${field} must be a string`);
 			return null;
 		}
 	}
-	for (const field of ["extensions", "skills"]) {
-		if (
-			Object.hasOwn(parsed.frontmatter, field) &&
-			parsed.frontmatter[field] !== null &&
-			parsed.frontmatter[field] !== undefined &&
-			typeof parsed.frontmatter[field] !== "string"
-		) {
-			diagnostic(`Skipping invalid agent file ${filePath}: ${field} must be a string`);
-			return null;
-		}
+	const description = asString(parsed.frontmatter.description);
+	if (!description) {
+		diagnostic(`Skipping invalid subagent file ${filePath}: description must be a non-empty string`);
+		return null;
 	}
-
-	const name = asString(parsed.frontmatter.name);
 	const tools = parseList(parsed.frontmatter.tools);
-	const subagentAgents = parseList(parsed.frontmatter.subagent_agents);
-	const extensions = parseList(parsed.frontmatter.extensions);
-	const skills = parseList(parsed.frontmatter.skills);
-	const model = parsed.frontmatter.model === null ? "" : asString(parsed.frontmatter.model);
-	const agent: AgentConfig = {
-		name: name ?? "",
-		description: asString(parsed.frontmatter.description) ?? "",
-		tools: tools ?? [],
-		model: model ?? "",
-		thinking: asString(parsed.frontmatter.thinking) ?? "",
+	if (!tools) {
+		diagnostic(`Skipping invalid subagent file ${filePath}: tools must be a non-empty comma-separated list`);
+		return null;
+	}
+	const activeSkills = parseList(parsed.frontmatter.active_skills) ? uniqueSorted(parseList(parsed.frontmatter.active_skills) ?? []) : undefined;
+	const skills = uniqueSorted([...(parseList(parsed.frontmatter.skills) ?? []), ...(activeSkills ?? [])]);
+	const config: AgentConfig = {
+		...DEFAULT_AGENT_CONFIG,
+		description,
+		tools,
+		model: parsed.frontmatter.model === null ? "" : asString(parsed.frontmatter.model) ?? DEFAULT_AGENT_CONFIG.model,
+		thinking: parsed.frontmatter.thinking === null ? "" : asString(parsed.frontmatter.thinking) ?? DEFAULT_AGENT_CONFIG.thinking,
 		systemPrompt: parsed.body,
 		filePath,
 		source,
-		...(subagentAgents ? { subagentAgents } : {}),
-		...(extensions ? { extensions } : {}),
-		...(skills ? { skills } : {}),
+		...(parseList(parsed.frontmatter.extensions) ? { extensions: parseList(parsed.frontmatter.extensions) } : {}),
+		...(skills.length > 0 ? { skills } : {}),
+		...(activeSkills ? { activeSkills } : {}),
 	};
-
-	const error = validateAgentConfig(agent);
+	const error = validateAgentConfig(config);
 	if (error) {
-		diagnostic(`Skipping invalid agent file ${filePath}: ${error}`);
+		diagnostic(`Skipping invalid subagent file ${filePath}: ${error}`);
 		return null;
 	}
-
-	return agent;
+	return config;
 }
 
-export function loadAgentsFromDir(dir: string, source: AgentSource = "user"): AgentConfig[] {
-	const result: AgentConfig[] = [];
-	if (!fs.existsSync(dir)) return result;
+export function getAgent(): AgentConfig { return agent; }
+export function getAgents(): AgentConfig[] { return [agent]; }
 
+export function discoverFileAgents(cwd: string, options: AgentDiscoveryOptions = { includeProject: true }): AgentConfig[] {
+	const safeCwd = sanitizeDiscoveryCwd(cwd);
+	if (options.includeProject !== false) {
+		const projectPath = findProjectSubagentPath(safeCwd);
+		if (projectPath) {
+			const projectAgent = parseSubagentMarkdown(projectPath, "project");
+			if (!projectAgent) throw new Error(`Invalid project subagent override: ${projectPath}`);
+			return [projectAgent];
+		}
+	}
+	return [DEFAULT_AGENT_CONFIG];
+}
+
+export function loadAgents(cwd: string = process.cwd(), options: AgentDiscoveryOptions = { includeProject: true }): AgentConfig[] {
+	agent = discoverFileAgents(cwd, options)[0] ?? DEFAULT_AGENT_CONFIG;
+	return [agent];
+}
+
+export const parseAgentMarkdown = parseSubagentMarkdown;
+export function loadAgentsFromDir(dir: string = "", source: "project" = "project"): AgentConfig[] {
+	const result: AgentConfig[] = [];
+	if (!dir || !fs.existsSync(dir)) return result;
 	let entries: fs.Dirent[];
 	try {
 		entries = fs.readdirSync(dir, { withFileTypes: true });
-	} catch (error) {
-		diagnostic(`Unable to list agent directory ${dir}: ${error instanceof Error ? error.message : String(error)}`);
+	} catch {
 		return result;
 	}
-
 	for (const entry of entries) {
 		if (!entry.name.endsWith(".md")) continue;
 		if (!entry.isFile() && !entry.isSymbolicLink()) continue;
-		const agent = parseAgentMarkdown(path.join(dir, entry.name), source);
-		if (agent && passesAllowlist(agent.name)) {
-			result.push(agent);
-		}
+		const parsed = parseSubagentMarkdown(path.join(dir, entry.name), source);
+		if (parsed) result.push(parsed);
 	}
 	return result;
 }
-
-function isDirectory(p: string): boolean {
-	try {
-		return fs.statSync(p).isDirectory();
-	} catch {
-		return false;
-	}
-}
-
-export function findNearestProjectAgentsDir(cwd: string): string | null {
-	let currentDir = sanitizeDiscoveryCwd(cwd);
-	while (true) {
-		const candidate = path.join(currentDir, PROJECT_AGENTS_RELATIVE);
-		if (isDirectory(candidate)) return candidate;
-
-		const parentDir = path.dirname(currentDir);
-		if (parentDir === currentDir) return null;
-		currentDir = parentDir;
-	}
-}
-
-export function getProjectAgentsDir(cwd: string): string {
-	const existing = findNearestProjectAgentsDir(cwd);
-	if (existing) return existing;
-
-	let currentDir = sanitizeDiscoveryCwd(cwd);
-	while (true) {
-		if (fs.existsSync(path.join(currentDir, ".git")) || fs.existsSync(path.join(currentDir, ".pi"))) {
-			return path.join(currentDir, PROJECT_AGENTS_RELATIVE);
-		}
-
-		const parentDir = path.dirname(currentDir);
-		if (parentDir === currentDir) return path.join(sanitizeDiscoveryCwd(cwd), PROJECT_AGENTS_RELATIVE);
-		currentDir = parentDir;
-	}
-}
-
-/** Package → user global → project-local kumpul overrides. */
-export function discoverFileAgents(cwd: string, options: AgentDiscoveryOptions = { includeProject: true }): AgentConfig[] {
-	const safeCwd = sanitizeDiscoveryCwd(cwd);
-	const map = new Map<string, AgentConfig>();
-
-	for (const agent of loadAgentsFromDir(PACKAGE_AGENTS_DIR, "package")) {
-		map.set(agent.name, agent);
-	}
-
-	const userDir = path.join(getAgentDir(), "agents");
-	for (const agent of loadAgentsFromDir(userDir, "user")) {
-		map.set(agent.name, agent);
-	}
-
-	if (options.includeProject !== false) {
-		const projectDir = findNearestProjectAgentsDir(safeCwd);
-		if (projectDir) {
-			for (const agent of loadAgentsFromDir(projectDir, "project")) {
-				map.set(agent.name, agent);
-			}
-		}
-	}
-
-	return Array.from(map.values());
-}
-
-(globalThis as Record<string, unknown>).__pi_subagents = {
-	registerAgent,
-	unregisterAgent,
-};
+export const findNearestProjectAgentsDir = findProjectSubagentPath;
+export function getProjectAgentsDir(cwd: string): string { return path.dirname(getProjectSubagentPath(cwd)); }

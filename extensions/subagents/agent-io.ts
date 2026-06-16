@@ -2,14 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { stringify } from "yaml";
-import { getProjectAgentsDir } from "./registry.ts";
+import { getProjectSubagentPath } from "./registry.ts";
 import { parseModelRef, THINKING_LEVELS, type AgentConfig } from "./types.ts";
 
 export interface AgentConfigPatch {
 	tools?: string[];
-	subagentAgents?: string[];
 	extensions?: string[];
 	skills?: string[];
+	activeSkills?: string[];
 	model?: string;
 	thinking?: string;
 }
@@ -21,10 +21,8 @@ function formatList(values: string[]): string {
 function applyPatch(frontmatter: Record<string, unknown>, patch: AgentConfigPatch): Record<string, unknown> {
 	const next = { ...frontmatter };
 	if (patch.tools !== undefined) next.tools = formatList(patch.tools);
-	if (patch.subagentAgents !== undefined) {
-		if (patch.subagentAgents.length > 0) next.subagent_agents = formatList(patch.subagentAgents);
-		else delete next.subagent_agents;
-	}
+	delete next.subagent_agents;
+	delete next.name;
 	if (patch.extensions !== undefined) {
 		if (patch.extensions.length > 0) next.extensions = formatList(patch.extensions);
 		else delete next.extensions;
@@ -33,13 +31,17 @@ function applyPatch(frontmatter: Record<string, unknown>, patch: AgentConfigPatc
 		if (patch.skills.length > 0) next.skills = formatList(patch.skills);
 		else delete next.skills;
 	}
+	if (patch.activeSkills !== undefined) {
+		if (patch.activeSkills.length > 0) next.active_skills = formatList(patch.activeSkills);
+		else delete next.active_skills;
+	}
 	if (patch.model !== undefined) next.model = patch.model;
 	if (patch.thinking !== undefined) next.thinking = patch.thinking;
 	return next;
 }
 
 function frontmatterToYaml(frontmatter: Record<string, unknown>): string {
-	const preferredOrder = ["name", "description", "tools", "subagent_agents", "extensions", "skills", "model", "thinking"];
+	const preferredOrder = ["description", "tools", "extensions", "skills", "active_skills", "model", "thinking"];
 	const ordered: Record<string, unknown> = {};
 	for (const key of preferredOrder) {
 		if (Object.hasOwn(frontmatter, key) && frontmatter[key] !== undefined) ordered[key] = frontmatter[key];
@@ -69,9 +71,9 @@ export function writeAgentConfig(filePath: string, patch: AgentConfigPatch): voi
 export function draftFromAgent(agent: AgentConfig): AgentConfigPatch {
 	return {
 		tools: [...agent.tools],
-		...(agent.subagentAgents ? { subagentAgents: [...agent.subagentAgents] } : {}),
 		...(agent.extensions ? { extensions: [...agent.extensions] } : {}),
 		...(agent.skills ? { skills: [...agent.skills] } : {}),
+		...(agent.activeSkills ? { activeSkills: [...agent.activeSkills] } : {}),
 		model: agent.model,
 		thinking: agent.thinking,
 	};
@@ -109,17 +111,17 @@ export function canEditSkills(tools: string[]): boolean {
 }
 
 function sameList(a: string[] | undefined, b: string[] | undefined): boolean {
-	const left = a ?? [];
-	const right = b ?? [];
+	const left = [...new Set(a ?? [])].sort((x, y) => x.localeCompare(y));
+	const right = [...new Set(b ?? [])].sort((x, y) => x.localeCompare(y));
 	return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 export function changedDraftPatch(agent: AgentConfig, draft: AgentConfigPatch): AgentConfigPatch {
 	const patch: AgentConfigPatch = {};
 	if (draft.tools !== undefined && !sameList(draft.tools, agent.tools)) patch.tools = draft.tools;
-	if (draft.subagentAgents !== undefined && !sameList(draft.subagentAgents, agent.subagentAgents)) patch.subagentAgents = draft.subagentAgents;
 	if (draft.extensions !== undefined && !sameList(draft.extensions, agent.extensions)) patch.extensions = draft.extensions;
 	if (draft.skills !== undefined && !sameList(draft.skills, agent.skills)) patch.skills = draft.skills;
+	if (draft.activeSkills !== undefined && !sameList(draft.activeSkills, agent.activeSkills)) patch.activeSkills = draft.activeSkills;
 	if (draft.model !== undefined && draft.model !== agent.model) patch.model = draft.model;
 	if (draft.thinking !== undefined && draft.thinking !== agent.thinking) patch.thinking = draft.thinking;
 	return patch;
@@ -135,12 +137,11 @@ export function writeProjectAgentConfig(sourceAgent: AgentConfig, projectFilePat
 		baseFrontmatter = undefined;
 	}
 	baseFrontmatter ??= {
-		name: sourceAgent.name,
 		description: sourceAgent.description,
 		tools: formatList(sourceAgent.tools),
-		...(sourceAgent.subagentAgents ? { subagent_agents: formatList(sourceAgent.subagentAgents) } : {}),
 		...(sourceAgent.extensions ? { extensions: formatList(sourceAgent.extensions) } : {}),
 		...(sourceAgent.skills ? { skills: formatList(sourceAgent.skills) } : {}),
+		...(sourceAgent.activeSkills ? { active_skills: formatList(sourceAgent.activeSkills) } : {}),
 		model: sourceAgent.model,
 		thinking: sourceAgent.thinking,
 	};
@@ -155,18 +156,15 @@ export function persistAgentDraft(cwd: string, agent: AgentConfig, draft: AgentC
 	const patch = changedDraftPatch(agent, draft);
 	if (Object.keys(patch).length === 0) return "No changes to save.";
 	if (agent.source === "project") writeAgentConfig(agent.filePath, patch);
-	else writeProjectAgentConfig(agent, path.join(getProjectAgentsDir(cwd), `${agent.name}.md`), patch);
+	else writeProjectAgentConfig(agent, getProjectSubagentPath(cwd), patch);
 	return null;
 }
 
 export function validateDraft(agent: AgentConfig, draft: AgentConfigPatch): string | null {
 	const tools = draft.tools ?? agent.tools;
-	const subagentAgents = draft.subagentAgents ?? agent.subagentAgents ?? [];
-	const skills = draft.skills ?? agent.skills ?? [];
+	const activeSkills = draft.activeSkills ?? agent.activeSkills ?? [];
+	const skills = [...new Set([...(draft.skills ?? agent.skills ?? []), ...activeSkills])];
 	if (tools.length === 0) return "Agents need at least one tool.";
-	if (tools.includes("subagent") && subagentAgents.length === 0) {
-		return "Agents with the subagent tool need at least one subagent_agents entry.";
-	}
 	if (skills.length > 0 && !tools.includes("read")) {
 		return "Agents with skills need read in tools so they can load SKILL.md files.";
 	}

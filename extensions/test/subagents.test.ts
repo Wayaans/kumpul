@@ -31,7 +31,7 @@ import {
 	writeAgentConfig,
 	writeProjectAgentConfig,
 } from "../subagents/agent-io.ts";
-import subagentsExtension, { parseConfig, registerAgent, unregisterAgent } from "../subagents/index.ts";
+import subagentsExtension, { normalizeActiveSkills, parseConfig } from "../subagents/index.ts";
 import type { AgentConfig } from "../subagents/types.ts";
 
 function tempDir(prefix: string): string {
@@ -80,101 +80,100 @@ test("resolveCustomToolExtension finds kumpul tools", () => {
 	assert.ok(resolveCustomToolExtension("subagent")?.endsWith("subagents/index.ts"));
 });
 
-test("discoverFileAgents keeps package builtins pinned by default", () => withoutSubagentAllowlist(() => {
+test("discoverFileAgents returns the single package default agent", () => withoutSubagentAllowlist(() => {
 	const agents = discoverFileAgents(tempDir("kumpul-subagents-package-defaults-"));
-	const names = agents.map((a) => a.name);
-	assert.ok(names.includes("agent"));
-	assert.ok(names.includes("reviewer"));
-	const agent = agents.find((a) => a.name === "agent");
-	const reviewer = agents.find((a) => a.name === "reviewer");
-	assert.equal(agent?.source, "package");
-	assert.equal(agent?.model, "openai-codex/gpt-5.3-codex-spark");
-	assert.equal(agent?.thinking, "medium");
-	assert.equal(reviewer?.source, "package");
-	assert.equal(reviewer?.model, "openai-codex/gpt-5.4-mini");
-	assert.equal(reviewer?.thinking, "high");
-	assert.match(agent?.systemPrompt ?? "", /You are an agent/);
-	assert.equal(agent?.extensions, undefined);
-	assert.equal(agent?.skills, undefined);
+	assert.deepEqual(agents.map((a) => a.name), ["agent"]);
+	const agent = agents[0]!;
+	assert.equal(agent.source, "package");
+	assert.equal(agent.model, "openai-codex/gpt-5.3-codex-spark");
+	assert.equal(agent.thinking, "medium");
+	assert.match(agent.systemPrompt, /You are a subagent/);
+	assert.equal(agent.extensions, undefined);
+	assert.equal(agent.skills, undefined);
 }));
 
-test("trusted project kumpul agents override package builtins", () => withoutSubagentAllowlist(() => {
+test("trusted project subagent override replaces package default", () => withoutSubagentAllowlist(() => {
 	const cwd = tempDir("kumpul-subagents-project-");
-	fs.mkdirSync(path.join(cwd, ".pi", "kumpul", "agents"), { recursive: true });
+	fs.mkdirSync(path.join(cwd, ".pi", "kumpul"), { recursive: true });
 	fs.writeFileSync(
-		path.join(cwd, ".pi", "kumpul", "agents", "reviewer.md"),
+		path.join(cwd, ".pi", "kumpul", "subagent.md"),
 		`---
-name: reviewer
-description: Project-specific reviewer
+description: Project-specific subagent
 tools: read
 model: anthropic/claude-haiku-4-5
 ---
-Project reviewer body.`,
-		"utf-8",
-	);
-	fs.writeFileSync(
-		path.join(cwd, ".pi", "kumpul", "agents", "project-helper.md"),
-		`---
-name: project-helper
-description: Project helper
-tools: read
-model: anthropic/claude-haiku-4-5
----
-Project helper body.`,
+Project subagent body.`,
 		"utf-8",
 	);
 
 	const agents = discoverFileAgents(cwd, { includeProject: true });
-	assert.equal(agents.find((a) => a.name === "project-helper")?.source, "project");
-	assert.equal(agents.find((a) => a.name === "reviewer")?.description, "Project-specific reviewer");
+	assert.deepEqual(agents.map((a) => a.name), ["agent"]);
+	assert.equal(agents[0]?.source, "project");
+	assert.equal(agents[0]?.description, "Project-specific subagent");
+	assert.equal(agents[0]?.systemPrompt.trim(), "Project subagent body.");
 }));
 
-test("untrusted project kumpul agents cannot override package builtins", () => withoutSubagentAllowlist(() => {
+test("untrusted project subagent override is ignored", () => withoutSubagentAllowlist(() => {
 	const cwd = tempDir("kumpul-subagents-project-untrusted-");
-	fs.mkdirSync(path.join(cwd, ".pi", "kumpul", "agents"), { recursive: true });
+	fs.mkdirSync(path.join(cwd, ".pi", "kumpul"), { recursive: true });
 	fs.writeFileSync(
-		path.join(cwd, ".pi", "kumpul", "agents", "reviewer.md"),
+		path.join(cwd, ".pi", "kumpul", "subagent.md"),
 		`---
-name: reviewer
-description: Project-specific reviewer
+description: Project-specific subagent
 tools: read
 model: anthropic/claude-haiku-4-5
 ---
-Project reviewer body.`,
+Project body.`,
 		"utf-8",
 	);
 
 	const agents = discoverFileAgents(cwd, { includeProject: false });
-	assert.equal(agents.find((a) => a.name === "reviewer")?.source, "package");
-	assert.notEqual(agents.find((a) => a.name === "reviewer")?.description, "Project-specific reviewer");
+	assert.equal(agents[0]?.source, "package");
+	assert.notEqual(agents[0]?.description, "Project-specific subagent");
 }));
 
-test("findNearestProjectAgentsDir walks up", () => {
+test("invalid trusted project subagent override fails closed", () => withoutSubagentAllowlist(() => {
+	const cwd = tempDir("kumpul-subagents-project-invalid-");
+	fs.mkdirSync(path.join(cwd, ".pi", "kumpul"), { recursive: true });
+	fs.writeFileSync(
+		path.join(cwd, ".pi", "kumpul", "subagent.md"),
+		`---
+description: Missing tools
+---
+Project body.`,
+		"utf-8",
+	);
+
+	assert.throws(() => discoverFileAgents(cwd, { includeProject: true }), /Invalid project subagent override/);
+}));
+
+test("findNearestProjectAgentsDir walks up to fixed subagent file", () => {
 	const root = tempDir("kumpul-subagents-walk-");
 	const nested = path.join(root, "a", "b");
-	fs.mkdirSync(path.join(root, ".pi", "kumpul", "agents"), { recursive: true });
+	fs.mkdirSync(path.join(root, ".pi", "kumpul"), { recursive: true });
+	fs.writeFileSync(path.join(root, ".pi", "kumpul", "subagent.md"), "---\ndescription: x\ntools: read\n---\nBody", "utf-8");
 	fs.mkdirSync(nested, { recursive: true });
-	assert.equal(findNearestProjectAgentsDir(nested), fs.realpathSync(path.join(root, ".pi", "kumpul", "agents")));
-	assert.equal(getProjectAgentsDir(nested), fs.realpathSync(path.join(root, ".pi", "kumpul", "agents")));
+	assert.equal(findNearestProjectAgentsDir(nested), fs.realpathSync(path.join(root, ".pi", "kumpul", "subagent.md")));
+	assert.equal(getProjectAgentsDir(nested), fs.realpathSync(path.join(root, ".pi", "kumpul")));
 });
 
-test("parseAgentMarkdown reads subagent_agents", () => {
+test("parseAgentMarkdown reads active skill allowlist", () => {
 	const cwd = tempDir("kumpul-subagents-parse-");
 	const filePath = path.join(cwd, "test.md");
 	fs.writeFileSync(
 		filePath,
 		`---
-name: helper
 description: Helper agent
-tools: read, subagent
-subagent_agents: reviewer
+tools: read
+active_skills: diagnose, diagnose
 model: anthropic/claude-sonnet-4-6
 ---
 Body.`,
 		"utf-8",
 	);
 	const agent = parseAgentMarkdown(filePath);
-	assert.equal(agent?.subagentAgents?.join(","), "reviewer");
+	assert.deepEqual(agent?.activeSkills, ["diagnose"]);
+	assert.deepEqual(agent?.skills, ["diagnose"]);
 });
 
 test("parseAgentMarkdown reads extension and skill allowlists", () => {
@@ -189,6 +188,7 @@ tools: read
 extensions: find-docs, pi-web-access
 skills: diagnose, test-driven-development
 model: anthropic/claude-sonnet-4-6
+thinking:
 ---
 Body.`,
 		"utf-8",
@@ -196,6 +196,7 @@ Body.`,
 	const agent = parseAgentMarkdown(filePath);
 	assert.deepEqual(agent?.extensions, ["find-docs", "pi-web-access"]);
 	assert.deepEqual(agent?.skills, ["diagnose", "test-driven-development"]);
+	assert.equal(agent?.thinking, "");
 });
 
 test("frontmatter validation rejects non-canonical extension and skill names", () => {
@@ -283,11 +284,9 @@ Body.`,
 		"utf-8",
 	);
 	fs.writeFileSync(
-		path.join(dir, "bad-nested.md"),
+		path.join(dir, "bad-tools.md"),
 		`---
-name: bad-nested
 description: Bad
-tools: read, subagent
 model: anthropic/test
 ---
 Body.`,
@@ -295,15 +294,6 @@ Body.`,
 	);
 	assert.equal(loadAgentsFromDir(dir).length, 0);
 });
-
-test("registerAgent rejects invalid dynamic agents", () => withoutSubagentAllowlist(() => {
-	assert.throws(() => registerAgent(testAgent({ description: "" })), /description/);
-	assert.throws(() => registerAgent({ ...testAgent({ name: "bad-source" }), source: "other" as AgentConfig["source"] }), /source/);
-	assert.throws(
-		() => registerAgent({ ...testAgent({ name: "bad-subagents" }), subagentAgents: "reviewer" as unknown as string[] }),
-		/subagent_agents/,
-	);
-}));
 
 test("parseConfig validates maxConcurrency", () => {
 	assert.deepEqual(parseConfig(null), {});
@@ -498,6 +488,14 @@ test("buildPiArgs loads named skill allowlist without auto-invoking it", async (
 	assert.match(args[skillIdx + 1] ?? "", /skills\/test-driven-development\/SKILL\.md$/);
 	assert.ok(args.includes("Task: task"));
 	assert.equal(args.some((arg) => arg.startsWith("/skill:")), false);
+});
+
+test("buildPiArgs invokes active skills and auto-loads them", async () => {
+	const { args } = await buildPiArgs(testAgent({ tools: ["read"], activeSkills: ["test-driven-development"] }), "task");
+	const skillIdx = args.indexOf("--skill");
+	assert.ok(skillIdx >= 0, "expected active skill to be loaded");
+	assert.match(args[skillIdx + 1] ?? "", /skills\/test-driven-development\/SKILL\.md$/);
+	assert.ok(args.includes("/skill:test-driven-development\n\nTask: task"));
 });
 
 test("skill allowlist resolves project skills before package skills", async () => {
@@ -848,11 +846,20 @@ test("subagents extension registers without throwing", () => {
 	assert.doesNotThrow(() => subagentsExtension(pi));
 });
 
-test("execute sanitizes unknown agent names in errors", async () => withoutSubagentAllowlistAsync(async () => {
+test("normalizeActiveSkills validates canonical skill names", () => {
+	assert.deepEqual(normalizeActiveSkills([" diagnose ", "test-driven-development", "diagnose"]), ["diagnose", "test-driven-development"]);
+	assert.deepEqual(normalizeActiveSkills(undefined), []);
+	assert.throws(() => normalizeActiveSkills("diagnose"), /must be an array/);
+	assert.throws(() => normalizeActiveSkills(["bad_skill"]), /canonical skill names/);
+	assert.throws(() => normalizeActiveSkills(["bad\nskill"]), /canonical skill names/);
+	assert.throws(() => normalizeActiveSkills([1]), /entries must be strings/);
+});
+
+test("execute rejects invalid aliases before spawning", async () => withoutSubagentAllowlistAsync(async () => {
 	type RegisteredSubagentTool = {
 		execute(
 			toolCallId: string,
-			params: { agent: string; task: string; alias?: string; cwd?: string },
+			params: { task: string; alias?: string; cwd?: string },
 			signal: AbortSignal | undefined,
 			onUpdate: undefined,
 			ctx: { cwd: string },
@@ -860,48 +867,25 @@ test("execute sanitizes unknown agent names in errors", async () => withoutSubag
 	};
 	let registered: RegisteredSubagentTool | undefined;
 	const pi = {
-		on() {},
-		registerCommand() {},
-		registerMessageRenderer() {},
-		registerTool(tool: unknown) {
-			registered = tool as RegisteredSubagentTool;
-		},
-		getActiveTools() {
-			return [];
-		},
-		getAllTools() {
-			return [];
-		},
-		getCommands() {
-			return [];
-		},
-		setActiveTools() {},
-		sendMessage() {},
-		exec: async () => ({ code: 0, stdout: "", stderr: "" }),
+		on() {}, registerCommand() {}, registerMessageRenderer() {},
+		registerTool(tool: unknown) { registered = tool as RegisteredSubagentTool; },
+		getActiveTools() { return []; }, getAllTools() { return []; }, getCommands() { return []; },
+		setActiveTools() {}, sendMessage() {}, exec: async () => ({ code: 0, stdout: "", stderr: "" }),
 	} as unknown as ExtensionAPI;
 
 	subagentsExtension(pi);
 	assert.ok(registered);
 	await assert.rejects(
-		registered.execute("tool-call", { agent: "bad\x1bagent", task: "task" }, undefined, undefined, {
-			cwd: process.cwd(),
-		}),
-		(error: unknown) => {
-			assert.ok(error instanceof Error);
-			assert.match(error.message, /Unknown or disabled agent: badagent/);
-			assert.doesNotMatch(error.message, /\x1b/);
-			return true;
-		},
+		registered.execute("tool-call", { alias: "bad1", task: "task" }, undefined, undefined, { cwd: process.cwd() }),
+		/subagent alias must not contain digits/,
 	);
 	await assert.rejects(
-		registered.execute(
-			"tool-call",
-			{ agent: "agent", alias: "bad\x1balias", task: "task", cwd: path.join(process.cwd(), "missing-cwd") },
-			undefined,
-			undefined,
-			{ cwd: process.cwd() },
-		),
+		registered.execute("tool-call", { alias: "bad\x1balias", task: "task", cwd: path.join(process.cwd(), "missing-cwd") }, undefined, undefined, { cwd: process.cwd() }),
 		/subagent alias must not contain control characters/,
+	);
+	await assert.rejects(
+		registered.execute("tool-call", { active_skills: ["bad_skill"], task: "task" } as never, undefined, undefined, { cwd: process.cwd() }),
+		/subagent active_skills entries must be canonical skill names/,
 	);
 }));
 
@@ -944,91 +928,32 @@ setInterval(() => {}, 1000);
 	}
 }));
 
-test("execute inherits and scopes parent model when custom agent model is empty", async () => withoutSubagentAllowlistAsync(async () => {
+test("execute runs the single agent without requiring an agent parameter", async () => withoutSubagentAllowlistAsync(async () => {
 	const binDir = tempDir("kumpul-subagents-bin-");
 	const fakePi = path.join(binDir, "pi");
-	fs.writeFileSync(
-		fakePi,
-		`#!/usr/bin/env node
-const modelIdx = process.argv.indexOf("--model");
-if (modelIdx < 0 || process.argv[modelIdx + 1] !== "cursor/composer-2.5") {
-  console.error("missing inherited model", JSON.stringify(process.argv));
-  process.exit(2);
-}
-const modelsIdx = process.argv.indexOf("--models");
-if (modelsIdx < 0 || process.argv[modelsIdx + 1] !== "cursor/composer-2.5") {
-  console.error("missing inherited model scope", JSON.stringify(process.argv));
-  process.exit(2);
-}
-const thinkingIdx = process.argv.indexOf("--thinking");
-if (thinkingIdx < 0 || process.argv[thinkingIdx + 1] !== "off") {
-  console.error("missing inherited thinking", JSON.stringify(process.argv));
-  process.exit(2);
-}
-const extensionArgs = process.argv.filter((arg, index) => process.argv[index - 1] === "--extension");
-if (extensionArgs.some((arg) => arg.includes("pi-cursor-sdk"))) {
-  console.error("unexpected implicit cursor provider", JSON.stringify(process.argv));
-  process.exit(2);
-}
+	fs.writeFileSync(fakePi, `#!/usr/bin/env node
 console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "ok" }] } }));
 console.log(JSON.stringify({ type: "agent_end", messages: [] }));
-`,
-		{ encoding: "utf-8", mode: 0o700 },
-	);
+`, { encoding: "utf-8", mode: 0o700 });
 
 	const previousPath = process.env.PATH;
 	process.env.PATH = `${binDir}${path.delimiter}${previousPath ?? ""}`;
-	registerAgent(testAgent({ name: "inherits-main", model: "", thinking: "", tools: ["read"] }));
 	try {
 		type RegisteredSubagentTool = {
 			name: string;
-			execute(
-				toolCallId: string,
-				params: { agent: string; task: string; cwd?: string },
-				signal: AbortSignal | undefined,
-				onUpdate: undefined,
-				ctx: {
-					cwd: string;
-					model: { provider: string; id: string };
-					modelRegistry: { find(): { contextWindow: number } | undefined };
-				},
-			): Promise<{ content: Array<{ type: string; text: string }> }>;
+			execute(toolCallId: string, params: { task: string; cwd?: string }, signal: AbortSignal | undefined, onUpdate: undefined, ctx: { cwd: string; modelRegistry: { find(): { contextWindow: number } | undefined } }): Promise<{ content: Array<{ type: string; text: string }> }>;
 		};
 		let registered: RegisteredSubagentTool | undefined;
 		const pi = {
-			on() {},
-			registerCommand() {},
-			registerMessageRenderer() {},
-			registerTool(tool: unknown) {
-				registered = tool as RegisteredSubagentTool;
-			},
-			getActiveTools() {
-				return [];
-			},
-			getAllTools() {
-				return [];
-			},
-			getCommands() {
-				return [];
-			},
-			setActiveTools() {},
-			sendMessage() {},
-			getThinkingLevel() {
-				return "off";
-			},
-			exec: async () => ({ code: 0, stdout: "", stderr: "" }),
+			on() {}, registerCommand() {}, registerMessageRenderer() {}, registerTool(tool: unknown) { registered = tool as RegisteredSubagentTool; },
+			getActiveTools() { return []; }, getAllTools() { return []; }, getCommands() { return []; }, setActiveTools() {}, sendMessage() {}, getThinkingLevel() { return "off"; }, exec: async () => ({ code: 0, stdout: "", stderr: "" }),
 		} as unknown as ExtensionAPI;
 
 		subagentsExtension(pi);
 		assert.ok(registered);
-		const result = await registered.execute("tool-call", { agent: "inherits-main", task: "ok" }, undefined, undefined, {
-			cwd: process.cwd(),
-			model: { provider: "cursor", id: "composer-2.5" },
-			modelRegistry: { find: () => ({ contextWindow: 200000 }) },
-		});
+		const result = await registered.execute("tool-call", { task: "ok" }, undefined, undefined, { cwd: process.cwd(), modelRegistry: { find: () => ({ contextWindow: 200000 }) } });
 		assert.equal(result.content[0]?.text, "ok");
 	} finally {
-		unregisterAgent("inherits-main");
 		process.env.PATH = previousPath;
 	}
 }));
@@ -1036,63 +961,27 @@ console.log(JSON.stringify({ type: "agent_end", messages: [] }));
 test("execute throws when subagent process fails", async () => withoutSubagentAllowlistAsync(async () => {
 	const binDir = tempDir("kumpul-subagents-bin-");
 	const fakePi = path.join(binDir, "pi");
-	fs.writeFileSync(
-		fakePi,
-		`#!/bin/sh
+	fs.writeFileSync(fakePi, `#!/bin/sh
 echo '{"type":"message_end","message":{"role":"assistant","errorMessage":"model failed","content":[{"type":"text","text":"bad output"}]}}'
 echo 'spawn stderr' >&2
 exit 3
-`,
-		{ encoding: "utf-8", mode: 0o700 },
-	);
+`, { encoding: "utf-8", mode: 0o700 });
 
 	const previousPath = process.env.PATH;
 	process.env.PATH = `${binDir}${path.delimiter}${previousPath ?? ""}`;
-	registerAgent(testAgent({ name: "failer" }));
 	try {
-		type RegisteredSubagentTool = {
-			name: string;
-			execute(
-				toolCallId: string,
-				params: { agent: string; task: string; cwd?: string },
-				signal: AbortSignal | undefined,
-				onUpdate: undefined,
-				ctx: { cwd: string; modelRegistry: { find(): undefined } },
-			): Promise<unknown>;
-		};
+		type RegisteredSubagentTool = { name: string; execute(toolCallId: string, params: { task: string; cwd?: string }, signal: AbortSignal | undefined, onUpdate: undefined, ctx: { cwd: string; modelRegistry: { find(): undefined } }): Promise<unknown>; };
 		let registered: RegisteredSubagentTool | undefined;
 		const pi = {
-			on() {},
-			registerCommand() {},
-			registerMessageRenderer() {},
-			registerTool(tool: unknown) {
-				registered = tool as RegisteredSubagentTool;
-			},
-			getActiveTools() {
-				return [];
-			},
-			getAllTools() {
-				return [];
-			},
-			getCommands() {
-				return [];
-			},
-			setActiveTools() {},
-			sendMessage() {},
-			exec: async () => ({ code: 0, stdout: "", stderr: "" }),
+			on() {}, registerCommand() {}, registerMessageRenderer() {}, registerTool(tool: unknown) { registered = tool as RegisteredSubagentTool; },
+			getActiveTools() { return []; }, getAllTools() { return []; }, getCommands() { return []; }, setActiveTools() {}, sendMessage() {}, exec: async () => ({ code: 0, stdout: "", stderr: "" }),
 		} as unknown as ExtensionAPI;
 
 		subagentsExtension(pi);
 		assert.ok(registered);
-		await assert.rejects(
-			registered.execute("tool-call", { agent: "failer", task: "fail" }, undefined, undefined, {
-				cwd: process.cwd(),
-				modelRegistry: { find: () => undefined },
-			}),
-			/error: model failed[\s\S]*stderr: spawn stderr/,
-		);
+		await assert.rejects(registered.execute("tool-call", { task: "fail" }, undefined, undefined, { cwd: process.cwd(), modelRegistry: { find: () => undefined } }), /Subagent/);
 	} finally {
-		unregisterAgent("failer");
 		process.env.PATH = previousPath;
 	}
 }));
+

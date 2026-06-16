@@ -9,6 +9,7 @@ import {
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig, AgentProgress, AgentResult } from "./types.ts";
+import { getGeneratedSubagentAliasForRender } from "./aliases.ts";
 import { displayAgentLabel, isCursorModel, sanitizeDisplayText } from "./types.ts";
 import {
 	parseCursorThinkingActivity,
@@ -90,11 +91,9 @@ export function extractToolArgsPreview(args: Record<string, unknown>): string {
 	if (args.query) return `"${cap(flatten(String(args.query)))}"`;
 	if (args.url) return cap(flatten(String(args.url)));
 	if (args.pattern) return cap(flatten(String(args.pattern)));
-	if (args.alias || args.agent) {
-		return displayAgentLabel(
-			{ agent: args.agent ? String(args.agent) : "?", alias: typeof args.alias === "string" ? args.alias : undefined },
-			"tool-call",
-		);
+	if (args.alias || args.agent || args.task) {
+		const alias = typeof args.alias === "string" ? args.alias : getGeneratedSubagentAliasForRender(args.toolCallId, args.task, args.cwd);
+		return displayAgentLabel({ agent: args.agent ? String(args.agent) : "agent", alias }, "tool-call");
 	}
 	if (Array.isArray(args.tasks)) {
 		const names = (args.tasks as Array<{ agent?: string; alias?: string }>)
@@ -118,10 +117,7 @@ function buildChildEnv(agent: AgentConfig): NodeJS.ProcessEnv {
 		PI_SUBAGENT_DEPTH: String(getCurrentSubagentDepth() + 1),
 	};
 	if (agent.tools.includes("subagent")) {
-		if (!agent.subagentAgents || agent.subagentAgents.length === 0) {
-			throw new Error(`Agent ${agent.name} uses subagent without bounded subagent_agents`);
-		}
-		env.PI_SUBAGENT_ALLOWED = agent.subagentAgents.join(",");
+		env.PI_SUBAGENT_ALLOWED = "agent";
 	}
 	return env;
 }
@@ -153,9 +149,6 @@ export async function buildPiArgs(
 	if (depth >= MAX_SUBAGENT_DEPTH) {
 		throw new Error(`Subagent depth ${depth} exceeds maximum ${MAX_SUBAGENT_DEPTH}`);
 	}
-	if (agent.tools.includes("subagent") && (!agent.subagentAgents || agent.subagentAgents.length === 0)) {
-		throw new Error(`Agent ${agent.name} uses subagent without bounded subagent_agents`);
-	}
 	const allowlist: string[] = [];
 	const extensionPaths = new Set<string>();
 	const unresolvedTools: string[] = [];
@@ -174,18 +167,20 @@ export async function buildPiArgs(
 		}
 	}
 	if (unresolvedTools.length > 0) {
-		throw new Error(`Unable to resolve tools for agent ${agent.name}: ${unresolvedTools.join(", ")}`);
+		throw new Error(`Unable to resolve tools for subagent: ${unresolvedTools.join(", ")}`);
 	}
 
 	const extensionAllowlist = resolveNamedExtensions(agent.extensions, extensionNamePaths, cwd, options);
 	if (extensionAllowlist.unresolved.length > 0) {
-		throw new Error(`Unable to resolve extensions for agent ${agent.name}: ${extensionAllowlist.unresolved.join(", ")}`);
+		throw new Error(`Unable to resolve extensions for subagent: ${extensionAllowlist.unresolved.join(", ")}`);
 	}
 	for (const extPath of extensionAllowlist.paths) extensionPaths.add(extPath);
 
-	const skillAllowlist = resolveNamedSkills(agent.skills, skillPaths, cwd, options);
+	const activeSkills = agent.activeSkills ?? [];
+	const loadedSkills = [...new Set([...(agent.skills ?? []), ...activeSkills])];
+	const skillAllowlist = resolveNamedSkills(loadedSkills, skillPaths, cwd, options);
 	if (skillAllowlist.unresolved.length > 0) {
-		throw new Error(`Unable to resolve skills for agent ${agent.name}: ${skillAllowlist.unresolved.join(", ")}`);
+		throw new Error(`Unable to resolve skills for subagent: ${skillAllowlist.unresolved.join(", ")}`);
 	}
 
 	const piBin = resolvePiBinary();
@@ -219,15 +214,17 @@ export async function buildPiArgs(
 	if (agent.thinking) args.push("--thinking", agent.thinking);
 	args.push("--append-system-prompt", promptPath);
 
+	const activeSkillInput = activeSkills.map((name) => `/skill:${name}`).join("\n\n");
+	const childInput = `${activeSkillInput ? `${activeSkillInput}\n\n` : ""}Task: ${task}`;
 	const TASK_LIMIT = 8000;
-	if (task.length > TASK_LIMIT) {
+	if (childInput.length > TASK_LIMIT) {
 		const taskPath = path.join(tempDir, "task.md");
 		await withFileMutationQueue(taskPath, async () => {
-			await fs.promises.writeFile(taskPath, `Task: ${task}`, { encoding: "utf-8", mode: 0o600 });
+			await fs.promises.writeFile(taskPath, childInput, { encoding: "utf-8", mode: 0o600 });
 		});
 		args.push(`@${taskPath}`);
 	} else {
-		args.push(`Task: ${task}`);
+		args.push(childInput);
 	}
 
 	return { args: [piBin.command, ...args], tempDir, childEnv: buildChildEnv(agent) };
@@ -283,6 +280,7 @@ function throttle<T extends (...args: unknown[]) => void>(fn: T, ms: number): T 
 }
 
 export interface RunSubagentOptions {
+	id?: string;
 	alias?: string;
 	inherited?: InheritedAgentConfig;
 	includeProject?: boolean;
@@ -299,13 +297,14 @@ export async function runSubagent(
 	extensionNamePaths: ExtensionNamePaths = new Map(),
 	options: RunSubagentOptions = {},
 ): Promise<AgentResult> {
-	const { alias } = options;
+	const { id, alias } = options;
 	agent = resolveEffectiveAgent(agent, options.inherited);
 	const { args, tempDir, childEnv } = await buildPiArgs(agent, task, toolExtensionPaths, skillPaths, cwd, extensionNamePaths, { includeProject: options.includeProject });
 	const command = args[0];
 	const spawnArgs = args.slice(1);
 
 	const result: AgentResult = {
+		id,
 		agent: agent.name,
 		alias,
 		task,
@@ -314,6 +313,7 @@ export async function runSubagent(
 		model: agent.model,
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 		progress: {
+			id,
 			agent: agent.name,
 			alias,
 			status: "running",

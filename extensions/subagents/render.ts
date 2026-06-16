@@ -2,6 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentResult, ToolEvent } from "./types.ts";
+import { getGeneratedSubagentAliasForRender } from "./aliases.ts";
 import { displayAgentLabel, MAX_TOOLS_COLLAPSED, sanitizeDisplayText } from "./types.ts";
 import {
 	formatContextUsage,
@@ -163,9 +164,10 @@ export function renderAgentProgress(
 export function renderSubagentCall(
 	args: { agent?: string; alias?: string; task?: string; cwd?: string },
 	theme: Theme,
-	context: { expanded: boolean; lastComponent?: unknown },
+	context: { expanded: boolean; lastComponent?: unknown; toolCallId?: unknown; cwd?: unknown },
 ) {
-	const label = args.agent ? displayAgentLabel({ agent: args.agent, alias: args.alias }, "tool-call") : undefined;
+	const alias = args.alias ?? getGeneratedSubagentAliasForRender(context.toolCallId, args.task, args.cwd ?? context.cwd);
+	const label = displayAgentLabel({ agent: args.agent ?? "agent", alias }, "tool-call");
 	if (!context.expanded) {
 		if (!label) {
 			return new Text(theme.fg("toolTitle", theme.bold("subagent")), 0, 0);

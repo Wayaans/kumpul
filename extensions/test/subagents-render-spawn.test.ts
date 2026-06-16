@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { getGeneratedSubagentAliasForExecute, getGeneratedSubagentAliasForRender } from "../subagents/aliases.ts";
 import { normalizeSubagentAlias } from "../subagents/index.ts";
 import { renderAgentProgress, renderSubagentCall, renderSubagentResult, toolsToShow } from "../subagents/render.ts";
 import { extractToolArgsPreview, formatSubagentFailure, progressSignature, runSubagent, Semaphore } from "../subagents/spawn.ts";
@@ -81,12 +82,14 @@ test("progressSignature changes on tool and nested updates", () => {
 	assert.notEqual(sig1, sig2);
 	base.recentTools[0]!.children = [
 		{
-			agent: "reviewer",
+			agent: "agent",
+			alias: "spec-reviewer",
 			task: "review",
 			output: "",
 			exitCode: 0,
 			progress: {
-				agent: "reviewer",
+				agent: "agent",
+				alias: "spec-reviewer",
 				status: "running",
 				task: "review",
 				recentTools: [],
@@ -118,11 +121,11 @@ test("progressSignature changes on tool and nested updates", () => {
 	assert.notEqual(progressSignature(base), sig4);
 });
 
-test("displayAgentLabel applies surface-specific alias policy", () => {
+test("displayAgentLabel uses alias on every surface", () => {
 	const run = { agent: "agent", alias: "spec-reviewer" };
 	assert.equal(displayAgentLabel(run, "tool-call"), "spec-reviewer");
 	assert.equal(displayAgentLabel(run, "error"), "spec-reviewer");
-	assert.equal(displayAgentLabel(run, "progress"), "agent");
+	assert.equal(displayAgentLabel(run, "progress"), "spec-reviewer");
 	assert.equal(displayAgentLabel({ agent: "agent" }, "tool-call"), "agent");
 	assert.equal(displayAgentLabel({ agent: "agent", alias: "spec\x1breviewer" }, "tool-call"), "specreviewer");
 	assert.equal(displayAgentLabel({ agent: "ag\x1bent" }, "tool-call"), "agent");
@@ -136,6 +139,22 @@ test("normalizeSubagentAlias trims and rejects invalid values", () => {
 	assert.throws(() => normalizeSubagentAlias(1), /must be a string/);
 	assert.throws(() => normalizeSubagentAlias("spec\nreviewer"), /control characters/);
 	assert.throws(() => normalizeSubagentAlias("spec\x1breviewer"), /control characters/);
+	assert.throws(() => normalizeSubagentAlias("reviewer-1"), /must not contain digits/);
+});
+
+test("generated alias is stable between render and execute for the same tool call", () => {
+	const first = getGeneratedSubagentAliasForRender("call-1", "same task", "/tmp/a");
+	const second = getGeneratedSubagentAliasForExecute("call-1", "same task", "/tmp/a");
+	assert.equal(first, second);
+	assert.match(first, /^[a-z-]+$/);
+});
+
+test("generated alias does not depend on process-local render state", () => {
+	const first = getGeneratedSubagentAliasForRender("call-2", "same task", "/tmp/a");
+	const second = getGeneratedSubagentAliasForExecute("call-2", "same task", "/tmp/a");
+	const third = getGeneratedSubagentAliasForExecute("call-2", "same task", "/tmp/a");
+	assert.equal(first, second);
+	assert.equal(second, third);
 });
 
 test("extractToolArgsPreview prefers sanitized alias for subagent calls", () => {
@@ -147,7 +166,7 @@ test("extractToolArgsPreview prefers sanitized alias for subagent calls", () => 
 		extractToolArgsPreview({ agent: "agent", alias: "spec\x1breviewer", task: "review spec" }),
 		"specreviewer",
 	);
-	assert.equal(extractToolArgsPreview({ agent: "ag\x1bent", task: "review spec" }), "agent");
+	assert.match(extractToolArgsPreview({ agent: "ag\x1bent", task: "review spec" }), /^[a-z-]+$/);
 	assert.equal(
 		extractToolArgsPreview({
 			tasks: [
@@ -222,7 +241,7 @@ test("renderSubagentCall sanitizes raw pre-validation fields", () => {
 	assert.doesNotMatch(lines, /\x1b/);
 });
 
-test("renderAgentProgress uses real agent name when alias is set", () => {
+test("renderAgentProgress uses alias when alias is set", () => {
 	const theme = {
 		fg: (_: string, text: string) => text,
 		bold: (text: string) => text,
@@ -253,11 +272,11 @@ test("renderAgentProgress uses real agent name when alias is set", () => {
 		120,
 	);
 	const firstLine = (rendered as { children: Array<{ text?: string }> }).children[0]?.text ?? "";
-	assert.match(firstLine, /✓ agent \(test\/model\)/);
-	assert.doesNotMatch(firstLine, /spec-reviewer/);
+	assert.match(firstLine, /✓ spec-reviewer \(test\/model\)/);
+	assert.doesNotMatch(firstLine, /✓ agent/);
 });
 
-test("subagent renderers show alias only in call header", () => {
+test("subagent renderers show alias in call and result headers", () => {
 	const theme = {
 		fg: (_: string, text: string) => text,
 		bold: (text: string) => text,
@@ -303,8 +322,7 @@ test("subagent renderers show alias only in call header", () => {
 	const resultLine =
 		(result as unknown as { children: Array<{ children: Array<{ text?: string }> }> }).children[0]?.children[0]?.text ?? "";
 	assert.match(callLine, /spec-reviewer/);
-	assert.match(resultLine, /✓ agent \(test\/model\)/);
-	assert.doesNotMatch(resultLine, /spec-reviewer/);
+	assert.match(resultLine, /✓ spec-reviewer \(test\/model\)/);
 });
 
 test("renderSubagentResult supports fallback and expanded result headers", () => {
@@ -326,14 +344,14 @@ test("renderSubagentResult supports fallback and expanded result headers", () =>
 			details: {
 				results: [
 					{
-						agent: "reviewer",
+						agent: "agent",
 						alias: "docs-review",
 						task: "task",
 						output: "done",
 						exitCode: 0,
 						model: "test/model",
 						progress: {
-							agent: "reviewer",
+							agent: "agent",
 							alias: "docs-review",
 							status: "completed",
 							task: "task",
@@ -354,8 +372,7 @@ test("renderSubagentResult supports fallback and expanded result headers", () =>
 	);
 	const expandedLine =
 		(expanded as unknown as { children: Array<{ children: Array<{ text?: string }> }> }).children[0]?.children[0]?.text ?? "";
-	assert.match(expandedLine, /✓ reviewer \(test\/model\)/);
-	assert.doesNotMatch(expandedLine, /docs-review/);
+	assert.match(expandedLine, /✓ docs-review \(test\/model\)/);
 });
 
 test("Semaphore removes aborted queued runs", async () => {

@@ -2,46 +2,75 @@
 
 Isolated child `pi` processes with live TUI progress (tool log, nested children, usage gauge). Derived from [amosblomqvist/pi-subagents](https://github.com/amosblomqvist/pi-subagents).
 
-## Builtin agents
+## Single subagent template
 
-| Agent | Tools | Purpose |
-|-------|-------|---------|
-| **agent** | read, write, edit, safe_bash, find, grep, ls, find_docs | General-purpose implementer prompt; pinned to `openai-codex/gpt-5.3-codex-spark`, `medium` thinking |
-| **reviewer** | read, find, ls, find_docs | Read-only code review prompt; pinned to `openai-codex/gpt-5.4-mini`, `high` thinking |
+Kumpul ships one subagent template: **agent**. The tool API does not expose an `agent` selector; every call uses the same template and labels the run with `alias`.
+
+Default tools: `read`, `write`, `edit`, `safe_bash`, `find`, `grep`, `ls`, `find_docs`.
+
+The default template is intentionally small. The child process still receives pi's normal system prompt, project context files, and the appended subagent prompt.
 
 ## Usage
 
 ```json
-{ "agent": "reviewer", "task": "Review extensions/subagents/index.ts for edge cases" }
-```
-
-Optional `alias` labels a run in the TUI without changing which agent config runs (tools, model, system prompt). Use it when reusing the blank **agent** shell with a task-specific prompt instead of an opinionated built-in like **reviewer**:
-
-```json
 {
-  "agent": "agent",
-  "alias": "spec-reviewer",
-  "task": "Review whether the implementation matches the spec. Do not trust the implementer's report..."
+  "alias": "code-reviewer",
+  "task": "Review extensions/subagents/index.ts for edge cases. Read-only: do not edit files."
 }
 ```
 
-`agent` still resolves the registry entry and spawn allowlist. `alias` is display-only: the tool call header uses it to show the run's purpose, and error messages use it for easier debugging. Progress/result rows with the status icon show the real agent name (`agent` or `reviewer`) so aliases do not hide which subagent type ran. Omit `alias` to show the real agent name everywhere.
+`alias` is optional. If omitted, the parent generates a local random Greek mythology name such as `athena`, `hermes`, or `daedalus`. Explicit aliases must not contain digits.
+
+Use `active_skills` to force skills at child startup, equivalent to starting the child input with `/skill:<name>`:
+
+```json
+{
+  "alias": "diagnoser",
+  "active_skills": ["diagnose"],
+  "task": "Debug this failing test and report the minimal fix."
+}
+```
+
+`active_skills` are automatically included in the child skill allowlist. Skills still require `read` in the configured tool list.
 
 Fan out with multiple `subagent` calls in one turn. Concurrency cap: `config.json` → `maxConcurrency` (default 4, must be >= 1). Nested subagents are capped by `PI_SUBAGENT_DEPTH` (max 2).
 
-## Custom agents
+## Project override
 
-Add markdown with YAML frontmatter:
+The package default can be overridden per trusted project at:
 
-| Location | Scope |
-|----------|--------|
-| `extensions/subagents/agents/` | Shipped with kumpul (override by name below) |
-| `~/.pi/agent/agents/` | Global |
-| `.pi/kumpul/agents/` | Trusted project overrides (nearest walk-up from cwd) |
+```text
+.pi/kumpul/subagent.md
+```
 
-Project agents in `.pi/kumpul/agents/` load only when pi marks the project trusted, then override package/global agents by name. The old `.pi/kumpul/agens/` spelling is no longer read. The `/subagents` setup UI writes changes to `.pi/kumpul/agents/`, so package defaults stay unchanged.
+Project overrides are ignored unless pi marks the project trusted.
 
-Required frontmatter: `name`, `description`, `tools`; optional frontmatter: `model`, `thinking`, `subagent_agents`, `extensions`, `skills`. Invalid files are skipped with a diagnostic. `tools` and `subagent_agents` must be comma-separated tool-safe identifiers; `extensions` and `skills` must be comma-separated canonical names (`lower-kebab-case`); `model` must be empty or `provider/model`; empty `model` inherits the parent agent's current model; `thinking` must be empty or one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`; empty `thinking` inherits the parent thinking level. Package built-ins are pinned by default, but custom, global, and project override agents can leave `model` or `thinking` blank to inherit. The child receives its effective model as both active `--model` and child `--models` scope so global model cycling settings do not leak unrelated provider warnings into subagent runs.
+Format:
+
+```yaml
+---
+description: General-purpose subagent template
+tools: edit, find, find_docs, grep, ls, read, safe_bash, write
+extensions:
+skills:
+active_skills:
+model: openai-codex/gpt-5.3-codex-spark
+thinking: medium
+---
+
+You are a subagent. Follow the delegated task exactly.
+```
+
+Frontmatter:
+
+- required: `description`, `tools`
+- optional: `extensions`, `skills`, `active_skills`, `model`, `thinking`
+- `tools` must be comma-separated tool-safe identifiers
+- `extensions`, `skills`, and `active_skills` must be comma-separated canonical names (`lower-kebab-case`)
+- empty `model` inherits the parent agent's current model
+- empty `thinking` inherits the parent thinking level
+
+## Child resources
 
 Child spawns keep discovery disabled with `--no-extensions` and `--no-skills`. Use `extensions` as an explicit allowlist of extension names to load by name, not path:
 
@@ -49,15 +78,17 @@ Child spawns keep discovery disabled with `--no-extensions` and `--no-skills`. U
 extensions: find-docs, pi-web-access
 ```
 
-Extension names resolve from project `.pi/extensions`, currently loaded extension metadata, this package, global extensions, and installed npm package entry points.
-
-Use `skills` as an explicit allowlist of skill names:
+Use `skills` as an explicit allowlist of skills the child may load on demand:
 
 ```yaml
 skills: diagnose, test-driven-development
 ```
 
-Skills resolve from project skills, currently loaded skill metadata, global skills, and this package. They are loaded with `--skill` so the child can use Pi's normal skill flow, but no skill is invoked at startup. Agents with `skills` must include `read` in `tools` so they can load full `SKILL.md` files on demand.
+Use `active_skills` for skills that should be invoked immediately at subagent startup:
+
+```yaml
+active_skills: diagnose
+```
 
 `cursor/*` models require a Cursor provider extension in `extensions`, for example [pi-cursor-sdk](https://www.npmjs.com/package/pi-cursor-sdk) installed globally (`pi install npm:pi-cursor-sdk`):
 
@@ -66,34 +97,24 @@ extensions: pi-cursor-sdk
 model: cursor/composer-2.5
 ```
 
-Child spawns do not auto-load Cursor providers; they use the same explicit extension allowlist path as any other extension.
-
-Live progress for `cursor/*` subagents is derived from Cursor SDK `thinking_*` replay in JSON mode (not `tool_execution_*`, which only native pi tool runs emit). OpenAI/Codex models still use `tool_execution_*`. Cursor may batch replay until a tool finishes; the parent UI heartbeats every 1s so duration and counters tick without excessive re-renders.
-
-Agents that include the `subagent` tool must also set `subagent_agents` to a bounded allowlist. Without it, the agent is rejected. The `/subagents` UI includes a Subagent agents picker when `subagent` is enabled.
-
 ## Tools
 
 | Tool | Resolved from |
-|------|----------------|
+|------|---------------|
 | `safe_bash`, `subagent`, `find_docs` | This package |
-| `fetch_content` | Not bundled; install/configure [pi-web-access](https://www.npmjs.com/package/pi-web-access) and add it to a custom agent if needed |
+| `fetch_content` | Not bundled; install/configure [pi-web-access](https://www.npmjs.com/package/pi-web-access) and add it to the subagent config if needed |
 
-Unresolved tools, extension names, and skill names fail fast instead of being silently omitted. Built-in agents avoid undeclared external tools. Raw `bash` is not available to subagents; use `safe_bash`.
+Unresolved tools, extension names, and skill names fail fast instead of being silently omitted. Raw `bash` is not available by default; use `safe_bash`.
 
 `safe_bash` blocks common destructive commands and shell-install patterns (`rm -rf /`, `rm -rf .`, `rm -rf *`, `git clean -fdx`, `pkill`, `sudo`, `mkfs`, `curl|sh`, etc.). It is a denylist, not a sandbox; only delegate shell access to agents you trust.
 
 ## UI
 
-`/subagents` — centered overlay to enable/disable the extension, toggle per-agent spawn, and edit **tools**, **subagent_agents**, **extensions**, **skills**, **model**, and **thinking**. Project config is honored at runtime only when the project is trusted. Edits to package/global agents are saved as project overrides under `.pi/kumpul/agents/<agent>.md`; existing project agents are edited in place. Changes apply after `/reload`.
+`/subagents` — centered overlay to enable/disable the extension and edit the single template's **tools**, **extensions**, **skills**, **active skills**, **model**, and **thinking**. Changes are saved as a trusted project override at `.pi/kumpul/subagent.md` and apply after `/reload`.
 
-Extension and skill pickers show only currently resolvable names with source labels (`project`, `loaded`, `package`, `global`, `npm`). Missing saved names are warned about and preserved on save; remove them manually from the `.md` file. Skills are editable only when `read` is enabled, and `read` stays locked while skills are selected.
+Extension and skill pickers show only currently resolvable names with source labels (`project`, `loaded`, `package`, `global`, `npm`). Missing saved names are warned about and preserved on save; remove them manually from the `.md` file. Skills and active skills are editable only when `read` is enabled, and `read` stays locked while skills are selected.
 
 Ctrl+O toggles collapsed (header + last 15 tool calls) vs expanded (full task, all tool calls, markdown output, nested subagent rows). Large child output is truncated in the tool result with a temp-file path to the full output.
-
-## Other extensions
-
-Register at runtime via `globalThis.__pi_subagents.registerAgent(config)` (see upstream README pattern). Map custom tools in `resolve-tools.ts` or install under `~/.pi/agent/extensions/`.
 
 ## Disable
 
@@ -103,6 +124,4 @@ Use `/subagents` or trusted project config:
 # .pi/kumpul/config.yaml
 subagents:
   enabled: false
-  disabledAgents:
-    - reviewer
 ```

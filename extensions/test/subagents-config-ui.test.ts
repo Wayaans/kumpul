@@ -15,7 +15,7 @@ function tempDir(prefix: string): string {
 
 function testAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
 	return {
-		name: "helper",
+		name: "agent",
 		description: "Helper agent",
 		tools: ["read"],
 		model: "anthropic/test-model",
@@ -27,27 +27,27 @@ function testAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
 	};
 }
 
-test("config-io merges extension enabled and disabledAgents in trusted project yaml", () => {
+test("config-io merges extension enabled in trusted project yaml", () => {
 	const cwd = tempDir("kumpul-subagents-ui-config-");
-	updateProjectSubagentsUiConfig(cwd, { enabled: false, disabledAgents: new Set(["reviewer"]) });
+	updateProjectSubagentsUiConfig(cwd, { enabled: false });
 	const loaded = loadMergedSubagentsUiConfig(cwd, { includeProject: true });
 	assert.equal(loaded.enabled, false);
-	assert.ok(loaded.disabledAgents.has("reviewer"));
 });
 
 test("config-io ignores project yaml when project is untrusted", () => {
 	const cwd = tempDir("kumpul-subagents-ui-config-untrusted-");
-	updateProjectSubagentsUiConfig(cwd, { enabled: false, disabledAgents: new Set(["reviewer"]) });
+	updateProjectSubagentsUiConfig(cwd, { enabled: false });
 	const loaded = loadMergedSubagentsUiConfig(cwd, { includeProject: false });
 	assert.equal(loaded.enabled, true);
-	assert.equal(loaded.disabledAgents.has("reviewer"), false);
 });
 
-test("config-io returns isolated disabledAgents sets", () => {
-	const cwd = tempDir("kumpul-subagents-ui-config-isolated-");
-	const loaded = loadMergedSubagentsUiConfig(cwd);
-	loaded.disabledAgents.add("reviewer");
-	assert.equal(loadMergedSubagentsUiConfig(cwd).disabledAgents.has("reviewer"), false);
+test("config-io rejects malformed trusted project yaml", () => {
+	const cwd = tempDir("kumpul-subagents-ui-config-malformed-");
+	const configPath = path.join(cwd, ".pi", "kumpul", "config.yaml");
+	fs.mkdirSync(path.dirname(configPath), { recursive: true });
+	fs.writeFileSync(configPath, "subagents: [", "utf-8");
+	assert.throws(() => loadMergedSubagentsUiConfig(cwd, { includeProject: true }), /Failed to parse subagents config/);
+	assert.equal(loadMergedSubagentsUiConfig(cwd, { includeProject: false }).enabled, true);
 });
 
 test("config-io saves nested config without stale legacy top-level keys", () => {
@@ -55,13 +55,12 @@ test("config-io saves nested config without stale legacy top-level keys", () => 
 	const configPath = path.join(cwd, ".pi", "kumpul", "config.yaml");
 	fs.mkdirSync(path.dirname(configPath), { recursive: true });
 	fs.writeFileSync(configPath, "enabled: false\ndisabledAgents:\n  - agent\n", "utf-8");
-	updateProjectSubagentsUiConfig(cwd, { enabled: true, disabledAgents: new Set(["reviewer"]) });
+	updateProjectSubagentsUiConfig(cwd, { enabled: true });
 	const content = fs.readFileSync(configPath, "utf-8");
 	assert.doesNotMatch(content, /^enabled:/m);
 	assert.doesNotMatch(content, /^disabledAgents:/m);
 	const loaded = loadMergedSubagentsUiConfig(cwd);
 	assert.equal(loaded.enabled, true);
-	assert.deepEqual([...loaded.disabledAgents], ["reviewer"]);
 });
 
 test("resolveEffectiveAgent does not inject cursor provider extension", () => {
@@ -72,11 +71,11 @@ test("resolveEffectiveAgent does not inject cursor provider extension", () => {
 	assert.equal(effective.extensions, undefined);
 });
 
-test("draftFromAgent includes nested subagent, extension, and skill allowlists", () => {
-	const draft = draftFromAgent(testAgent({ subagentAgents: ["reviewer"], extensions: ["find-docs"], skills: ["diagnose"] }));
-	assert.deepEqual(draft.subagentAgents, ["reviewer"]);
+test("draftFromAgent includes extension, skill, and active skill allowlists", () => {
+	const draft = draftFromAgent(testAgent({ extensions: ["find-docs"], skills: ["diagnose"], activeSkills: ["diagnose"] }));
 	assert.deepEqual(draft.extensions, ["find-docs"]);
 	assert.deepEqual(draft.skills, ["diagnose"]);
+	assert.deepEqual(draft.activeSkills, ["diagnose"]);
 });
 
 test("changedDraftPatch ignores restored original values", () => {
@@ -85,6 +84,11 @@ test("changedDraftPatch ignores restored original values", () => {
 	assert.deepEqual(changedDraftPatch(agent, { ...draftFromAgent(agent), model: "openai-codex/gpt-5.4-mini" }), {
 		model: "openai-codex/gpt-5.4-mini",
 	});
+});
+
+test("changedDraftPatch compares allowlists semantically", () => {
+	const agent = testAgent({ extensions: ["pi-web-access", "find-docs"], skills: ["test-driven-development", "diagnose"] });
+	assert.deepEqual(changedDraftPatch(agent, { ...draftFromAgent(agent), extensions: ["find-docs", "pi-web-access"], skills: ["diagnose", "test-driven-development"] }), {});
 });
 
 test("setup value displays preserve explicit blank inheritance", () => {
