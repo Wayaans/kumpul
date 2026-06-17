@@ -142,7 +142,7 @@ export async function buildPiArgs(
 	skillPaths: SkillPaths = new Map(),
 	cwd: string = process.cwd(),
 	extensionNamePaths: ExtensionNamePaths = new Map(),
-	options: { includeProject?: boolean } = { includeProject: true },
+	options: { includeProject?: boolean; taskPreamble?: string } = { includeProject: true },
 ): Promise<{ args: string[]; tempDir: string; childEnv: NodeJS.ProcessEnv }> {
 	agent = resolveEffectiveAgent(agent);
 	const depth = getCurrentSubagentDepth();
@@ -215,7 +215,8 @@ export async function buildPiArgs(
 	args.push("--append-system-prompt", promptPath);
 
 	const activeSkillInput = activeSkills.map((name) => `/skill:${name}`).join("\n\n");
-	const childInput = `${activeSkillInput ? `${activeSkillInput}\n\n` : ""}Task: ${task}`;
+	const childInputParts = [activeSkillInput, options.taskPreamble, `Task: ${task}`].filter(Boolean);
+	const childInput = childInputParts.join("\n\n");
 	const TASK_LIMIT = 8000;
 	if (childInput.length > TASK_LIMIT) {
 		const taskPath = path.join(tempDir, "task.md");
@@ -284,6 +285,7 @@ export interface RunSubagentOptions {
 	alias?: string;
 	inherited?: InheritedAgentConfig;
 	includeProject?: boolean;
+	taskPreamble?: string;
 }
 
 export async function runSubagent(
@@ -299,7 +301,7 @@ export async function runSubagent(
 ): Promise<AgentResult> {
 	const { id, alias } = options;
 	agent = resolveEffectiveAgent(agent, options.inherited);
-	const { args, tempDir, childEnv } = await buildPiArgs(agent, task, toolExtensionPaths, skillPaths, cwd, extensionNamePaths, { includeProject: options.includeProject });
+	const { args, tempDir, childEnv } = await buildPiArgs(agent, task, toolExtensionPaths, skillPaths, cwd, extensionNamePaths, { includeProject: options.includeProject, taskPreamble: options.taskPreamble });
 	const command = args[0];
 	const spawnArgs = args.slice(1);
 

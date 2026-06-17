@@ -21,6 +21,8 @@ The default template is intentionally small. The child process still receives pi
 
 `alias` is optional. If omitted, the parent generates a local random Greek mythology name such as `athena`, `hermes`, or `daedalus`. Explicit aliases must not contain digits.
 
+`model`, `thinking`, and `task_preamble` are per-call overrides intended for project templates (see below). `task_preamble` is inserted into the child input after active skill commands and before `Task: ...`.
+
 Use `active_skills` to force skills at child startup, equivalent to starting the child input with `/skill:<name>`:
 
 ```json
@@ -34,6 +36,50 @@ Use `active_skills` to force skills at child startup, equivalent to starting the
 `active_skills` are automatically included in the child skill allowlist. Skills still require `read` in the configured tool list.
 
 Fan out with multiple `subagent` calls in one turn. Concurrency cap: `config.json` → `maxConcurrency` (default 4, must be >= 1). Nested subagents are capped by `PI_SUBAGENT_DEPTH` (max 2).
+
+## Project templates
+
+Trusted projects can define delegation recipes for the main agent at:
+
+```text
+.pi/kumpul/templates/*.md
+```
+
+Template files are hand-written. `/subagents` includes a **Create project template** action that writes a valid stub; if the requested name already exists, it creates `name-copy.md`, `name-copy-two.md`, etc. Templates are discovered on each user message, so no `/reload` is needed after edits.
+
+Format:
+
+```yaml
+---
+name: implementer
+description: Implements structured plans with high code quality
+model: openai-codex/gpt-5.4
+thinking: xhigh
+active_skills: test-driven-development
+---
+
+You are the implementer subagent.
+Follow the plan exactly.
+```
+
+Frontmatter:
+
+- required: `name`, `description`
+- optional: `model`, `thinking`, `active_skills`
+- unsupported: `tools`, `skills`, `extensions`
+- `name` must match the filename stem and obey alias rules, including no digits
+
+The main agent sees template metadata only. If the template body is non-empty, metadata includes `preamble_path`; the main agent should read that file only when using the template, then pass the markdown body after frontmatter as `task_preamble`.
+
+Template mapping:
+
+| Template field | `subagent` param |
+|----------------|------------------|
+| `name` | `alias` |
+| `model` | `model` |
+| `thinking` | `thinking` |
+| `active_skills` | `active_skills` |
+| body | `task_preamble` |
 
 ## Project override
 
@@ -110,7 +156,7 @@ Unresolved tools, extension names, and skill names fail fast instead of being si
 
 ## UI
 
-`/subagents` — centered overlay to enable/disable the extension and edit the single template's **tools**, **extensions**, **skills**, **active skills**, **model**, and **thinking**. Changes are saved as a trusted project override at `.pi/kumpul/subagent.md` and apply after `/reload`.
+`/subagents` — centered overlay to enable/disable the extension, edit the single runtime template's **tools**, **extensions**, **skills**, **active skills**, **model**, and **thinking**, and create project template stubs. Runtime config changes are saved as a trusted project override at `.pi/kumpul/subagent.md` and apply after `/reload`.
 
 Extension and skill pickers show only currently resolvable names with source labels (`project`, `loaded`, `package`, `global`, `npm`). Missing saved names are warned about and preserved on save; remove them manually from the `.md` file. Skills and active skills are editable only when `read` is enabled, and `read` stays locked while skills are selected.
 

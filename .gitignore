@@ -6,3 +6,4 @@ extensions/**/node_modules/
 .pi/npm/
 docs/todos/
 .opensrcs
+.DS_Store

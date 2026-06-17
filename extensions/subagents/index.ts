@@ -18,7 +18,8 @@ import {
 } from "./render.ts";
 import { formatDuration, formatSubagentFailure, resolveEffectiveAgent, runSubagent, Semaphore } from "./spawn.ts";
 import { collectNamedExtensionPaths, collectSkillPaths, collectToolExtensionPaths } from "./resolve-tools.ts";
-import { containsControlCharacters, parseModelRef, type AgentResult, type ExtensionConfig, type SubagentDetails } from "./types.ts";
+import { buildProjectTemplateGuidance, discoverProjectTemplates } from "./templates.ts";
+import { containsControlCharacters, parseModelRef, THINKING_LEVELS, type AgentResult, type ExtensionConfig, type SubagentDetails } from "./types.ts";
 
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
 const CONFIG_PATH = path.join(EXTENSION_DIR, "config.json");
@@ -42,6 +43,32 @@ export function normalizeSubagentAlias(raw: unknown): string | undefined {
 
 function isCanonicalResourceName(name: string): boolean {
 	return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name);
+}
+
+export function normalizeOptionalModel(raw: unknown): string | undefined {
+	if (raw === undefined || raw === null) return undefined;
+	if (typeof raw !== "string") throw new Error("subagent model must be a string");
+	const model = raw.trim();
+	if (!model) return undefined;
+	if (!parseModelRef(model)) throw new Error("subagent model must be provider/model");
+	return model;
+}
+
+export function normalizeOptionalThinking(raw: unknown): string | undefined {
+	if (raw === undefined || raw === null) return undefined;
+	if (typeof raw !== "string") throw new Error("subagent thinking must be a string");
+	const thinking = raw.trim();
+	if (!thinking) return undefined;
+	if (!THINKING_LEVELS.includes(thinking as never)) {
+		throw new Error(`subagent thinking must be one of ${THINKING_LEVELS.join(", ")}`);
+	}
+	return thinking;
+}
+
+export function normalizeOptionalTaskPreamble(raw: unknown): string | undefined {
+	if (raw === undefined || raw === null) return undefined;
+	if (typeof raw !== "string") throw new Error("subagent task_preamble must be a string");
+	return raw.trim() ? raw : undefined;
 }
 
 export function normalizeActiveSkills(raw: unknown): string[] {
@@ -89,6 +116,13 @@ export default function (pi: ExtensionAPI): void {
 
 	loadAgents(process.cwd(), { includeProject: false });
 
+	pi.on("before_agent_start", async (event, ctx) => {
+		if (!isProjectTrusted(ctx)) return undefined;
+		const guidance = buildProjectTemplateGuidance(discoverProjectTemplates(ctx.cwd, { includeProject: true }), ctx.cwd);
+		if (!guidance) return undefined;
+		return { systemPrompt: `${event.systemPrompt}\n\n${guidance}` };
+	});
+
 	pi.registerCommand("subagents", {
 		description: "Configure subagents (extension, tools, model, thinking, skills, active skills)",
 		handler: async (_args, ctx) => {
@@ -106,6 +140,8 @@ export default function (pi: ExtensionAPI): void {
 			"Use `subagent` for delegated work that benefits from an isolated agent: implementation, review, exploration, debugging, research, planning, or other multi-step tasks. For simple independent I/O, prefer direct parallel tool calls.",
 			"Use `alias` to label the subagent's role or purpose (e.g. `code-reviewer`, `implementer`, `explorer`, `researcher`). If omitted, a random Greek mythology name is generated.",
 			"Use `active_skills` to force skills at startup when useful (e.g. `[\"diagnose\"]`).",
+			"Use `model`, `thinking`, and `task_preamble` only when applying a trusted project subagent template, unless the user explicitly asks for those overrides.",
+			"When a project subagent template includes `preamble_path`, read that file first and pass only the markdown body after frontmatter as `task_preamble`.",
 			"For read-only review, say so explicitly in the task because the subagent may have write tools.",
 			"For multiple independent subagent tasks, emit multiple `subagent` tool calls in the same turn — they run in parallel automatically.",
 			"Subagents have NO context from the current conversation — include ALL necessary context in the task description.",
@@ -114,6 +150,9 @@ export default function (pi: ExtensionAPI): void {
 			task: Type.String({ description: "Task description" }),
 			alias: Type.Optional(Type.String({ description: "Optional display label for this run (e.g. code-reviewer). Must not contain digits." })),
 			active_skills: Type.Optional(Type.Array(Type.String({ description: "Skill name to invoke at subagent startup" }))),
+			model: Type.Optional(Type.String({ description: "Model override from a project subagent template, in provider/model form" })),
+			thinking: Type.Optional(Type.String({ description: "Thinking override from a project subagent template" })),
+			task_preamble: Type.Optional(Type.String({ description: "Task preamble from a project subagent template; inserted before Task" })),
 			cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
 		}),
 
@@ -147,11 +186,16 @@ export default function (pi: ExtensionAPI): void {
 					thinking: agent.thinking ? "" : pi.getThinkingLevel(),
 				};
 				const activeSkills = normalizeActiveSkills(params.active_skills);
+				const modelOverride = normalizeOptionalModel(params.model);
+				const thinkingOverride = normalizeOptionalThinking(params.thinking);
+				const taskPreamble = normalizeOptionalTaskPreamble(params.task_preamble);
 				if (activeSkills.length > 0 && !agent.tools.includes("read")) {
 					throw new Error("subagent active_skills require read in tools so skills can load SKILL.md files");
 				}
 				const effectiveAgent = resolveEffectiveAgent({
 					...agent,
+					...(modelOverride ? { model: modelOverride } : {}),
+					...(thinkingOverride ? { thinking: thinkingOverride } : {}),
 					activeSkills: [...new Set([...(agent.activeSkills ?? []), ...activeSkills])].sort((a, b) => a.localeCompare(b)),
 				}, inherited);
 				const modelRef = parseModelRef(effectiveAgent.model);
@@ -219,7 +263,7 @@ export default function (pi: ExtensionAPI): void {
 						toolExtensionPaths,
 						skillPaths,
 						extensionNamePaths,
-						{ id: runId, alias, inherited, includeProject },
+						{ id: runId, alias, inherited, includeProject, taskPreamble },
 					),
 					signal,
 				);

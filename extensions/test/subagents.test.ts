@@ -32,6 +32,11 @@ import {
 	writeProjectAgentConfig,
 } from "../subagents/agent-io.ts";
 import subagentsExtension, { normalizeActiveSkills, parseConfig } from "../subagents/index.ts";
+import {
+	buildProjectTemplateGuidance,
+	createProjectTemplateStub,
+	discoverProjectTemplates,
+} from "../subagents/templates.ts";
 import type { AgentConfig } from "../subagents/types.ts";
 
 function tempDir(prefix: string): string {
@@ -155,6 +160,74 @@ test("findNearestProjectAgentsDir walks up to fixed subagent file", () => {
 	fs.mkdirSync(nested, { recursive: true });
 	assert.equal(findNearestProjectAgentsDir(nested), fs.realpathSync(path.join(root, ".pi", "kumpul", "subagent.md")));
 	assert.equal(getProjectAgentsDir(nested), fs.realpathSync(path.join(root, ".pi", "kumpul")));
+});
+
+test("discoverProjectTemplates reads trusted project template metadata without body injection", () => {
+	const cwd = tempDir("kumpul-subagents-templates-");
+	fs.mkdirSync(path.join(cwd, ".pi", "kumpul", "templates"), { recursive: true });
+	fs.writeFileSync(
+		path.join(cwd, ".pi", "kumpul", "templates", "implementer.md"),
+		`---
+name: implementer
+description: Implements structured plans
+model: openai-codex/gpt-5.4
+thinking: xhigh
+active_skills: test-driven-development, diagnose
+---
+
+You are the implementer.
+`,
+		"utf-8",
+	);
+
+	const templates = discoverProjectTemplates(cwd, { includeProject: true });
+	assert.equal(templates.length, 1);
+	assert.deepEqual(templates[0], {
+		name: "implementer",
+		description: "Implements structured plans",
+		model: "openai-codex/gpt-5.4",
+		thinking: "xhigh",
+		activeSkills: ["diagnose", "test-driven-development"],
+		filePath: fs.realpathSync(path.join(cwd, ".pi", "kumpul", "templates", "implementer.md")),
+		hasPreamble: true,
+	});
+
+	const guidance = buildProjectTemplateGuidance(templates, cwd);
+	assert.match(guidance, /alias: "implementer"/);
+	assert.match(guidance, /model: "openai-codex\/gpt-5\.4"/);
+	assert.match(guidance, /thinking: "xhigh"/);
+	assert.match(guidance, /active_skills: \["diagnose","test-driven-development"\]/);
+	assert.match(guidance, /preamble_path: \.pi\/kumpul\/templates\/implementer\.md/);
+	assert.doesNotMatch(guidance, /You are the implementer/);
+});
+
+test("discoverProjectTemplates skips invalid and untrusted templates", () => {
+	const cwd = tempDir("kumpul-subagents-templates-invalid-");
+	const dir = path.join(cwd, ".pi", "kumpul", "templates");
+	fs.mkdirSync(dir, { recursive: true });
+	fs.writeFileSync(path.join(dir, "valid.md"), "---\nname: valid\ndescription: Valid template\n---\n", "utf-8");
+	fs.writeFileSync(path.join(dir, "bad.md"), "---\nname: other\ndescription: Bad template\n---\n", "utf-8");
+	fs.writeFileSync(path.join(dir, "reviewer-one.md"), "---\nname: reviewer-1\ndescription: Bad template\n---\n", "utf-8");
+	fs.writeFileSync(path.join(dir, "typo.md"), "---\nname: typo\ndescription: Bad template\nactive_skill: diagnose\n---\n", "utf-8");
+
+	assert.deepEqual(discoverProjectTemplates(cwd, { includeProject: false }), []);
+	assert.deepEqual(discoverProjectTemplates(cwd, { includeProject: true }).map((t) => t.name), ["valid"]);
+});
+
+test("createProjectTemplateStub creates copy names without digits", () => {
+	const cwd = tempDir("kumpul-subagents-template-stub-");
+	const first = createProjectTemplateStub(cwd, "reviewer");
+	const second = createProjectTemplateStub(cwd, "reviewer");
+	const third = createProjectTemplateStub(cwd, "reviewer");
+
+	assert.equal(path.basename(first.filePath), "reviewer.md");
+	assert.equal(first.name, "reviewer");
+	assert.equal(path.basename(second.filePath), "reviewer-copy.md");
+	assert.equal(second.name, "reviewer-copy");
+	assert.equal(path.basename(third.filePath), "reviewer-copy-two.md");
+	assert.equal(third.name, "reviewer-copy-two");
+	assert.match(fs.readFileSync(third.filePath, "utf-8"), /active_skills:/);
+	assert.deepEqual(discoverProjectTemplates(cwd, { includeProject: true }).map((t) => t.name), ["reviewer", "reviewer-copy", "reviewer-copy-two"]);
 });
 
 test("parseAgentMarkdown reads active skill allowlist", () => {
@@ -496,6 +569,19 @@ test("buildPiArgs invokes active skills and auto-loads them", async () => {
 	assert.ok(skillIdx >= 0, "expected active skill to be loaded");
 	assert.match(args[skillIdx + 1] ?? "", /skills\/test-driven-development\/SKILL\.md$/);
 	assert.ok(args.includes("/skill:test-driven-development\n\nTask: task"));
+});
+
+test("buildPiArgs inserts task preamble after active skills and before task", async () => {
+	const { args } = await buildPiArgs(
+		testAgent({ tools: ["read"], activeSkills: ["test-driven-development"] }),
+		"do the work",
+		new Map(),
+		new Map(),
+		process.cwd(),
+		new Map(),
+		{ includeProject: true, taskPreamble: "  Use the implementer role.\n  Keep indentation." },
+	);
+	assert.ok(args.includes("/skill:test-driven-development\n\n  Use the implementer role.\n  Keep indentation.\n\nTask: do the work"));
 });
 
 test("skill allowlist resolves project skills before package skills", async () => {
@@ -953,6 +1039,45 @@ console.log(JSON.stringify({ type: "agent_end", messages: [] }));
 		assert.ok(registered);
 		const result = await registered.execute("tool-call", { task: "ok" }, undefined, undefined, { cwd: process.cwd(), modelRegistry: { find: () => ({ contextWindow: 200000 }) } });
 		assert.equal(result.content[0]?.text, "ok");
+	} finally {
+		process.env.PATH = previousPath;
+	}
+}));
+
+test("execute applies model thinking and task preamble params", async () => withoutSubagentAllowlistAsync(async () => {
+	const binDir = tempDir("kumpul-subagents-param-bin-");
+	const fakePi = path.join(binDir, "pi");
+	fs.writeFileSync(fakePi, `#!/usr/bin/env node
+const payload = process.argv.slice(2).join("\\n");
+console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: payload }] } }));
+console.log(JSON.stringify({ type: "agent_end", messages: [] }));
+`, { encoding: "utf-8", mode: 0o700 });
+
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${binDir}${path.delimiter}${previousPath ?? ""}`;
+	try {
+		type RegisteredSubagentTool = {
+			name: string;
+			execute(toolCallId: string, params: { task: string; model?: string; thinking?: string; task_preamble?: string }, signal: AbortSignal | undefined, onUpdate: undefined, ctx: { cwd: string; modelRegistry: { find(): { contextWindow: number } | undefined } }): Promise<{ content: Array<{ type: string; text: string }> }>;
+		};
+		let registered: RegisteredSubagentTool | undefined;
+		const pi = {
+			on() {}, registerCommand() {}, registerMessageRenderer() {}, registerTool(tool: unknown) { registered = tool as RegisteredSubagentTool; },
+			getActiveTools() { return []; }, getAllTools() { return []; }, getCommands() { return []; }, setActiveTools() {}, sendMessage() {}, getThinkingLevel() { return "off"; }, exec: async () => ({ code: 0, stdout: "", stderr: "" }),
+		} as unknown as ExtensionAPI;
+
+		subagentsExtension(pi);
+		assert.ok(registered);
+		const result = await registered.execute("tool-call", {
+			task: "do the work",
+			model: "openai-codex/gpt-5.4-mini",
+			thinking: "high",
+			task_preamble: "Use reviewer behavior.",
+		}, undefined, undefined, { cwd: process.cwd(), modelRegistry: { find: () => ({ contextWindow: 200000 }) } });
+		const output = result.content[0]?.text ?? "";
+		assert.match(output, /--model\nopenai-codex\/gpt-5\.4-mini/);
+		assert.match(output, /--thinking\nhigh/);
+		assert.match(output, /Use reviewer behavior\.\n\nTask: do the work/);
 	} finally {
 		process.env.PATH = previousPath;
 	}

@@ -31,6 +31,7 @@ import {
 	type SubagentsUiConfig,
 } from "./config-io.ts";
 import { discoverFileAgents, loadAgents } from "./registry.ts";
+import { createProjectTemplateStub } from "./templates.ts";
 import {
 	discoverSelectableExtensionOptions,
 	discoverSelectableSkillOptions,
@@ -57,7 +58,8 @@ type Screen =
 	| { type: "extensions"; agent: AgentConfig }
 	| { type: "skills"; agent: AgentConfig }
 	| { type: "activeSkills"; agent: AgentConfig }
-	| { type: "model"; agent: AgentConfig };
+	| { type: "model"; agent: AgentConfig }
+	| { type: "createTemplate" };
 
 interface ModelRow {
 	key: string;
@@ -320,6 +322,8 @@ export async function showSubagentsSetup(
 						return buildResourceScreen(screen.agent, "activeSkills");
 					case "model":
 						return buildModelScreen(screen.agent);
+					case "createTemplate":
+						return buildCreateTemplateScreen();
 				}
 			};
 
@@ -331,6 +335,13 @@ export async function showSubagentsSetup(
 						description: RELOAD_HINT,
 						currentValue: uiConfig.enabled ? "enabled" : "disabled",
 						values: ["enabled", "disabled"],
+					},
+					{
+						id: "create-template",
+						label: "Create project template",
+						description: ".pi/kumpul/templates/<name>.md · available next message",
+						currentValue: "open",
+						values: ["open"],
 					},
 					...fileAgents.map((agent) => ({
 						id: `agent:${agent.name}`,
@@ -359,6 +370,15 @@ export async function showSubagentsSetup(
 							list.updateValue("extension", newValue);
 							ctx.ui.notify(`Subagents extension ${enabled ? "enabled" : "disabled"}. ${RELOAD_HINT}`, "info");
 							tui.requestRender();
+							return;
+						}
+						if (id === "create-template") {
+							if (!requireTrustedProject()) {
+								list.updateValue("create-template", "open");
+								tui.requestRender();
+								return;
+							}
+							pushScreen({ type: "createTemplate" });
 							return;
 						}
 						const agentName = id.slice("agent:".length);
@@ -618,6 +638,46 @@ export async function showSubagentsSetup(
 				});
 			};
 
+
+			const buildCreateTemplateScreen = () => {
+				const nameInput = new Input();
+				nameInput.onSubmit = () => {
+					if (!requireTrustedProject()) return;
+					try {
+						const created = createProjectTemplateStub(ctx.cwd, nameInput.getValue());
+						ctx.ui.notify(`Created ${created.name} template at ${created.filePath}. Edit it, then send your next message.`, "info");
+						popScreen();
+					} catch (error) {
+						ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+						tui.requestRender();
+					}
+				};
+				const body = new Container();
+				body.addChild(new Text(`  ${theme.fg("muted", "Template names become subagent aliases: lower kebab-case, no digits.")}`));
+				body.addChild(nameInput);
+				return {
+					shell: compactShell(
+						theme,
+						"Create project template",
+						"Creates .pi/kumpul/templates/<name>.md",
+						body,
+						"enter create · esc back",
+					),
+					inputTarget: {
+						handleInput(data: string) {
+							if (kb.matches(data, "tui.select.cancel") || matchesKey(data, Key.escape)) {
+								popScreen();
+								return;
+							}
+							nameInput.handleInput(data);
+							tui.requestRender();
+						},
+						invalidate() {
+							body.invalidate();
+						},
+					},
+				};
+			};
 
 			const buildModelScreen = (agent: AgentConfig) => {
 				const entry = getDraft(agent);
