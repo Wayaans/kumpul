@@ -14,23 +14,34 @@ function isEditorHorizontalLine(line: string): boolean {
 	return plain.length > 0 && /^[─ ↑↓0-9more]+$/.test(plain) && plain.includes("─");
 }
 
-function removeEditorHorizontalLines(lines: string[]): string[] {
+function wrapEditorLine(line: string, width: number, lineColor: (text: string) => string): string {
+	if (width <= 2) return lineColor(lineFill(width));
+	const innerWidth = width - 2;
+	const clipped = truncateToWidth(line, innerWidth, "");
+	const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)));
+	return lineColor("│") + clipped + padding + lineColor("│");
+}
+
+function removeEditorHorizontalLines(lines: string[], width: number, lineColor: (text: string) => string): string[] {
 	if (lines.length <= 2) return lines;
 	const [, ...rest] = lines;
 	const bottomIndex = rest.findIndex(isEditorHorizontalLine);
-	if (bottomIndex < 0) return rest;
-	return rest.filter((_, index) => index !== bottomIndex);
+	const withoutBorders = bottomIndex < 0 ? rest : rest.filter((_, index) => index !== bottomIndex);
+	return withoutBorders.map((line) => wrapEditorLine(line, width, lineColor));
 }
 
-function hideEditorHorizontalLines(editor: EditorComponent): EditorComponent {
+function hideEditorHorizontalLines(editor: EditorComponent, fallbackLineColor: (text: string) => string): EditorComponent {
 	const render = editor.render.bind(editor);
-	editor.render = (width: number): string[] => removeEditorHorizontalLines(render(width));
+	editor.render = (width: number): string[] => {
+		const lineColor = "borderColor" in editor && typeof editor.borderColor === "function" ? editor.borderColor : fallbackLineColor;
+		return removeEditorHorizontalLines(render(width), width, lineColor);
+	};
 	return editor;
 }
 
 class BorderlessEditor extends CustomEditor {
 	override render(width: number): string[] {
-		return removeEditorHorizontalLines(super.render(width));
+		return removeEditorHorizontalLines(super.render(width), width, this.borderColor);
 	}
 }
 
@@ -86,7 +97,7 @@ function getTokenStatsLine(ctx: ExtensionContext, theme: ExtensionContext["ui"][
 	const { stats, context } = getTokenStats(ctx);
 	const statBlocks = stats.map((stat) => theme.inverse(theme.fg("text", ` ${stat.toUpperCase()} `)));
 	const contextBlock = theme.inverse(theme.bold(theme.fg("accent", ` ${context.toUpperCase()} `)));
-	const separator = theme.inverse(theme.fg("text", "╎"));
+	const separator = theme.inverse(theme.fg("text", "│"));
 	return [...statBlocks, contextBlock].join(separator);
 }
 
@@ -122,10 +133,18 @@ function renderTopLine(
 	textColor: (text: string) => string,
 ): string {
 	if (width <= 0) return "";
+	if (width <= 2) return lineColor(lineFill(width));
+	const innerWidth = width - 2;
 	const rightText = right ? ` ${right} ` : "";
 	const rightWidth = visibleWidth(rightText);
-	const fillWidth = Math.max(0, width - rightWidth);
-	return lineColor(lineFill(fillWidth)) + textColor(truncateToWidth(rightText, width - fillWidth, ""));
+	const fillWidth = Math.max(0, innerWidth - rightWidth);
+	return lineColor("╭" + lineFill(fillWidth)) + textColor(truncateToWidth(rightText, innerWidth - fillWidth, "")) + lineColor("╮");
+}
+
+function renderBoxSpacer(width: number, lineColor: (text: string) => string): string {
+	if (width <= 0) return "";
+	if (width <= 2) return lineColor(lineFill(width));
+	return lineColor("│") + " ".repeat(width - 2) + lineColor("│");
 }
 
 function renderBottomLine(
@@ -135,10 +154,12 @@ function renderBottomLine(
 	textColor: (text: string) => string,
 ): string {
 	if (width <= 0) return "";
+	if (width <= 2) return lineColor(lineFill(width));
+	const innerWidth = width - 2;
 	const leftText = left ? ` ${left} ` : "";
-	const clippedLeft = truncateToWidth(leftText, width, "");
-	const fillWidth = Math.max(0, width - visibleWidth(clippedLeft));
-	return textColor(clippedLeft) + lineColor(lineFill(fillWidth));
+	const clippedLeft = truncateToWidth(leftText, innerWidth, "");
+	const fillWidth = Math.max(0, innerWidth - visibleWidth(clippedLeft));
+	return lineColor("╰") + textColor(clippedLeft) + lineColor(lineFill(fillWidth) + "╯");
 }
 
 function makeLine(renderText: (width: number) => string): Component {
@@ -154,7 +175,7 @@ function installEditor(ctx: ExtensionContext): void {
 	setTimeout(() => {
 		const currentFactory = ctx.ui.getEditorComponent();
 		ctx.ui.setEditorComponent((tui: TUI, theme: EditorTheme, keybindings) => {
-			if (currentFactory) return hideEditorHorizontalLines(currentFactory(tui, theme, keybindings));
+			if (currentFactory) return hideEditorHorizontalLines(currentFactory(tui, theme, keybindings), theme.borderColor);
 			return new BorderlessEditor(tui, theme, keybindings);
 		});
 	}, 0);
@@ -168,9 +189,10 @@ function installWidgets(ctx: ExtensionContext, pi: ExtensionAPI): void {
 			return {
 				invalidate() {},
 				render(width: number): string[] {
+					const lineColor = thinkingLineColor(pi, theme);
 					return [
-						renderTopLine(getTokenStatsLine(ctx, theme), width, thinkingLineColor(pi, theme), (text) => text),
-						" ".repeat(Math.max(0, width)),
+						renderTopLine(getTokenStatsLine(ctx, theme), width, lineColor, (text) => text),
+						renderBoxSpacer(width, lineColor),
 					];
 				},
 			};
@@ -183,9 +205,10 @@ function installWidgets(ctx: ExtensionContext, pi: ExtensionAPI): void {
 		(_tui, theme) => ({
 			invalidate() {},
 			render(width: number): string[] {
+				const lineColor = thinkingLineColor(pi, theme);
 				return [
-					" ".repeat(Math.max(0, width)),
-					renderBottomLine(getModelLine(ctx, pi, theme), width, thinkingLineColor(pi, theme), (text) => text),
+					renderBoxSpacer(width, lineColor),
+					renderBottomLine(getModelLine(ctx, pi, theme), width, lineColor, (text) => text),
 				];
 			},
 		}),
