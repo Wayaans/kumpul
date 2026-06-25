@@ -4,21 +4,17 @@ Redesigns the pi footer to a Codex CLI–style status bar using active theme col
 
 ## Behavior
 
-On session start, replaces the built-in footer with a themed layout:
+On session start, replaces the built-in footer with a minimal single-line layout:
 
-- **codex** (default): path │ branch status · session on line 1; tokens │ context bar │ model on line 2
-- **compact**: single line with path, branch status, tokens, context bar, and model
-- **minimal**: context bar and model only
+- Right side: extension statuses from `ctx.ui.setStatus()`, then current path and git branch/status, separated by `│`.
 
-Context usage renders as a `█░` bar colored with `success` / `warning` / `error` from the theme. Path basename uses `text`, parent segments `dim`. When `git` is installed and cwd is in a repo, branch status appears immediately right of the path: `⎇ branch` in `accent` (`warning` when detached), `*` unstaged (`warning`), `+` staged (`success`), `⇡N` / `⇣N` ahead/behind (`dim`). Model id uses `accent`; thinking level uses theme `thinking*` tokens when the model supports reasoning.
-
-Extension statuses from `ctx.ui.setStatus()` appear on an extra dim line when present, except **codex-usage** (`◷ NN%`), which is shown on the model line immediately left of the provider prefix.
+Path basename uses `text`, parent segments `dim`. When `git` is installed and cwd is in a repo, branch status appears right of the path: `⎇ branch` in `accent` (`warning` when detached), `*` unstaged (`warning`), `+` staged (`success`), `⇡N` / `⇣N` ahead/behind (`dim`). Token stats, context usage, model info, and cost are intentionally hidden.
 
 ## Commands
 
 - **/polish-statusline** — re-apply footer from saved config
-- **/polish-statusline** `codex` | `compact` | `minimal` — switch variant (persisted)
-- **/polish-statusline** `cycle` — rotate variants (persisted)
+- **/polish-statusline** `codex` | `compact` | `minimal` — accepted for compatibility; all variants render the same minimal footer
+- **/polish-statusline** `cycle` — accepted for compatibility
 - **/polish-statusline** `off` — restore pi default footer (persisted)
 
 ## Config

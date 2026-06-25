@@ -188,12 +188,10 @@ function gitSegment(
 	return theme.fg(branchColor, `⎇ ${branch}`) + suffix;
 }
 
-function pathLine(ctx: ExtensionContext, theme: Theme, footerData: ReadonlyFooterDataProvider): string {
+function locationSegment(ctx: ExtensionContext, theme: Theme, footerData: ReadonlyFooterDataProvider): string {
 	const parts: string[] = [styledPath(ctx.sessionManager.getCwd(), theme)];
 	const git = gitSegment(ctx.sessionManager.getCwd(), footerData, theme);
 	if (git) parts.push(git);
-	const name = ctx.sessionManager.getSessionName();
-	if (name) parts.push(theme.fg("muted", name));
 	return parts.join(divider(theme));
 }
 
@@ -205,7 +203,6 @@ function extensionStatusLine(
 	const statuses = footerData.getExtensionStatuses();
 	if (statuses.size === 0) return undefined;
 	const sorted = Array.from(statuses.entries())
-		.filter(([key]) => key !== CODEX_USAGE_STATUS_KEY)
 		.sort(([a], [b]) => a.localeCompare(b))
 		.map(([, text]) => sanitizeStatus(text));
 	return truncateToWidth(theme.fg("dim", sorted.join(divider(theme))), width, theme.fg("dim", "..."));
@@ -218,34 +215,10 @@ export function renderPolishedFooter(
 	variant: FooterVariant,
 	width: number,
 ): string[] {
-	const usage = collectUsage(ctx);
-	const tokens = tokenSegment(usage, ctx, theme);
-	const context = contextSegment(ctx, theme);
-	const model = modelSegment(ctx, theme, footerData);
-	const extLine = extensionStatusLine(footerData, theme, width);
-
+	void variant;
 	const ellipsis = theme.fg("dim", "...");
-
-	if (variant === "minimal") {
-		const row = align(context, model, width, ellipsis);
-		return extLine ? [row, extLine] : [row];
-	}
-
-	if (variant === "compact") {
-		const left = [tokens, context].filter(Boolean).join(divider(theme));
-		const pathParts = [styledPath(ctx.sessionManager.getCwd(), theme)];
-		const git = gitSegment(ctx.sessionManager.getCwd(), footerData, theme);
-		if (git) pathParts.push(git);
-		const mid = pathParts.join(divider(theme)) + divider(theme) + left;
-		const row = align(mid, model, width, ellipsis);
-		return extLine ? [row, extLine] : [row];
-	}
-
-	// codex (default): path row + stats row
-	const pathRow = truncateToWidth(pathLine(ctx, theme, footerData), width, ellipsis);
-	const statsLeft = [tokens, context].filter(Boolean).join(divider(theme));
-	const statsRow = align(statsLeft, model, width, ellipsis);
-	const lines = [pathRow, statsRow];
-	if (extLine) lines.push(extLine);
-	return lines;
+	const statuses = extensionStatusLine(footerData, theme, width);
+	const location = locationSegment(ctx, theme, footerData);
+	const right = [statuses, location].filter(Boolean).join(divider(theme));
+	return [align("", right, width, ellipsis)];
 }
