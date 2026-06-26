@@ -5,8 +5,6 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { isAbsolute, relative, resolve, sep as pathSep } from "node:path";
 import { isGitInstalled, readGitRepoStatus } from "./git-status.ts";
 
-export type FooterVariant = "codex" | "compact" | "minimal";
-
 const BAR_WIDTH = 10;
 const SEP = " │ ";
 /** Status key from extensions/codex-usage — rendered on the model line, not the extension-status row. */
@@ -212,10 +210,8 @@ export function renderPolishedFooter(
 	ctx: ExtensionContext,
 	theme: Theme,
 	footerData: ReadonlyFooterDataProvider,
-	variant: FooterVariant,
 	width: number,
 ): string[] {
-	void variant;
 	const ellipsis = theme.fg("dim", "...");
 	const statuses = extensionStatusLine(footerData, theme, width);
 	const location = locationSegment(ctx, theme, footerData);

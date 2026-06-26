@@ -1,8 +1,0 @@
-{
-  "name": "@wayanary/kumpul-polish-statusline",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "yaml": "^2.8.1"
-  }
-}
