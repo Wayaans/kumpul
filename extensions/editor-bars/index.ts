@@ -30,18 +30,24 @@ function removeEditorHorizontalLines(lines: string[], width: number, lineColor: 
 	return withoutBorders.map((line) => wrapEditorLine(line, width, lineColor));
 }
 
-function hideEditorHorizontalLines(editor: EditorComponent, fallbackLineColor: (text: string) => string): EditorComponent {
+function hideEditorHorizontalLines(editor: EditorComponent, lineColor: (text: string) => string): EditorComponent {
 	const render = editor.render.bind(editor);
-	editor.render = (width: number): string[] => {
-		const lineColor = "borderColor" in editor && typeof editor.borderColor === "function" ? editor.borderColor : fallbackLineColor;
-		return removeEditorHorizontalLines(render(width), width, lineColor);
-	};
+	editor.render = (width: number): string[] => removeEditorHorizontalLines(render(width), width, lineColor);
 	return editor;
 }
 
 class BorderlessEditor extends CustomEditor {
+	constructor(
+		tui: TUI,
+		theme: EditorTheme,
+		keybindings: ConstructorParameters<typeof CustomEditor>[2],
+		private readonly lineColor: (text: string) => string,
+	) {
+		super(tui, theme, keybindings);
+	}
+
 	override render(width: number): string[] {
-		return removeEditorHorizontalLines(super.render(width), width, this.borderColor);
+		return removeEditorHorizontalLines(super.render(width), width, this.lineColor);
 	}
 }
 
@@ -112,7 +118,7 @@ function getModelLine(ctx: ExtensionContext, pi: ExtensionAPI, theme: ExtensionC
 	if (model.reasoning) {
 		const level = pi.getThinkingLevel();
 		const label = level === "off" ? "THINKING OFF" : level.toUpperCase();
-		parts.push(theme.inverse(thinkingLineColor(pi, theme)(` ${label} `)));
+		parts.push(theme.inverse(thinkingInfoColor(pi, theme)(` ${label} `)));
 	}
 
 	return parts.join("");
@@ -122,7 +128,11 @@ function lineFill(width: number): string {
 	return "─".repeat(Math.max(0, width));
 }
 
-function thinkingLineColor(pi: ExtensionAPI, theme: ExtensionContext["ui"]["theme"]): (text: string) => string {
+function thinkingLineColor(_pi: ExtensionAPI, theme: ExtensionContext["ui"]["theme"]): (text: string) => string {
+	return theme.getThinkingBorderColor("off");
+}
+
+function thinkingInfoColor(pi: ExtensionAPI, theme: ExtensionContext["ui"]["theme"]): (text: string) => string {
 	return theme.getThinkingBorderColor(pi.getThinkingLevel());
 }
 
@@ -171,12 +181,13 @@ function makeLine(renderText: (width: number) => string): Component {
 	};
 }
 
-function installEditor(ctx: ExtensionContext): void {
+function installEditor(ctx: ExtensionContext, pi: ExtensionAPI): void {
 	setTimeout(() => {
 		const currentFactory = ctx.ui.getEditorComponent();
 		ctx.ui.setEditorComponent((tui: TUI, theme: EditorTheme, keybindings) => {
-			if (currentFactory) return hideEditorHorizontalLines(currentFactory(tui, theme, keybindings), theme.borderColor);
-			return new BorderlessEditor(tui, theme, keybindings);
+			const lineColor = thinkingLineColor(pi, ctx.ui.theme);
+			if (currentFactory) return hideEditorHorizontalLines(currentFactory(tui, theme, keybindings), lineColor);
+			return new BorderlessEditor(tui, theme, keybindings, lineColor);
 		});
 	}, 0);
 }
@@ -219,7 +230,7 @@ function installWidgets(ctx: ExtensionContext, pi: ExtensionAPI): void {
 export default function (pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
-		installEditor(ctx);
+		installEditor(ctx, pi);
 		installWidgets(ctx, pi);
 	});
 
