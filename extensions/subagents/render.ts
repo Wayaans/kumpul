@@ -84,9 +84,10 @@ export function renderAgentProgress(
 				? theme.fg("success", "✓")
 				: theme.fg("error", "✗");
 	const stats = `${prog.toolCount} tools · ${formatDuration(prog.durationMs)}`;
-	const modelStr = r.model ? theme.fg("dim", ` (${r.model})`) : "";
+	const title = r.model || displayAgentLabel(r, "progress");
+	const thinkingStr = r.thinking ? theme.fg("dim", ` (${r.thinking})`) : "";
 	addLine(
-		`${icon} ${theme.fg("toolTitle", theme.bold(displayAgentLabel(r, "progress")))}${modelStr} — ${theme.fg("dim", stats)}`,
+		`${icon} ${theme.fg("toolTitle", theme.bold(title))}${thinkingStr} — ${theme.fg("dim", stats)}`,
 	);
 
 	const renderToolRow = (

@@ -241,7 +241,7 @@ test("renderSubagentCall sanitizes raw pre-validation fields", () => {
 	assert.doesNotMatch(lines, /\x1b/);
 });
 
-test("renderAgentProgress uses alias when alias is set", () => {
+test("renderAgentProgress uses model as title and thinking in metadata", () => {
 	const theme = {
 		fg: (_: string, text: string) => text,
 		bold: (text: string) => text,
@@ -254,6 +254,7 @@ test("renderAgentProgress uses alias when alias is set", () => {
 			output: "",
 			exitCode: 0,
 			model: "test/model",
+			thinking: "medium",
 			progress: {
 				agent: "agent",
 				alias: "spec-reviewer",
@@ -272,11 +273,11 @@ test("renderAgentProgress uses alias when alias is set", () => {
 		120,
 	);
 	const firstLine = (rendered as { children: Array<{ text?: string }> }).children[0]?.text ?? "";
-	assert.match(firstLine, /✓ spec-reviewer \(test\/model\)/);
-	assert.doesNotMatch(firstLine, /✓ agent/);
+	assert.match(firstLine, /✓ test\/model \(medium\)/);
+	assert.doesNotMatch(firstLine, /✓ spec-reviewer/);
 });
 
-test("subagent renderers show alias in call and result headers", () => {
+test("subagent renderers show alias in call header and model in result header", () => {
 	const theme = {
 		fg: (_: string, text: string) => text,
 		bold: (text: string) => text,
@@ -298,6 +299,7 @@ test("subagent renderers show alias in call and result headers", () => {
 						output: "",
 						exitCode: 0,
 						model: "test/model",
+						thinking: "high",
 						progress: {
 							agent: "agent",
 							alias: "spec-reviewer",
@@ -322,7 +324,7 @@ test("subagent renderers show alias in call and result headers", () => {
 	const resultLine =
 		(result as unknown as { children: Array<{ children: Array<{ text?: string }> }> }).children[0]?.children[0]?.text ?? "";
 	assert.match(callLine, /spec-reviewer/);
-	assert.match(resultLine, /✓ spec-reviewer \(test\/model\)/);
+	assert.match(resultLine, /✓ test\/model \(high\)/);
 });
 
 test("renderSubagentResult supports fallback and expanded result headers", () => {
@@ -372,7 +374,7 @@ test("renderSubagentResult supports fallback and expanded result headers", () =>
 	);
 	const expandedLine =
 		(expanded as unknown as { children: Array<{ children: Array<{ text?: string }> }> }).children[0]?.children[0]?.text ?? "";
-	assert.match(expandedLine, /✓ docs-review \(test\/model\)/);
+	assert.match(expandedLine, /✓ test\/model/);
 });
 
 test("Semaphore removes aborted queued runs", async () => {

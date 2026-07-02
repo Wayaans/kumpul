@@ -211,6 +211,7 @@ export default function (pi: ExtensionAPI): void {
 					output: "",
 					exitCode: -1,
 					model: effectiveAgent.model,
+					thinking: effectiveAgent.thinking,
 					contextWindow,
 					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 					progress: {

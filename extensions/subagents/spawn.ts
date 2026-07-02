@@ -313,6 +313,7 @@ export async function runSubagent(
 		output: "",
 		exitCode: 0,
 		model: agent.model,
+		thinking: agent.thinking,
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 		progress: {
 			id,

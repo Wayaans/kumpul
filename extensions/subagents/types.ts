@@ -102,6 +102,7 @@ export interface AgentResult {
 	exitCode: number;
 	progress: AgentProgress;
 	model?: string;
+	thinking?: string;
 	contextWindow?: number;
 	stderr?: string;
 	spawnError?: string;
