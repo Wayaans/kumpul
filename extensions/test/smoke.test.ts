@@ -6,6 +6,7 @@ import findDocsExtension from "../find-docs/index.ts";
 import polishStatuslineExtension from "../polish-statusline/index.ts";
 import codexUsageExtension from "../codex-usage/index.ts";
 import gitGuardrailsExtension from "../git-guardrails/index.ts";
+import githubReferencesExtension from "../github-references/index.ts";
 import handoffExtension from "../handoff/index.ts";
 import opencodeGoFixExtension from "../opencode-go-fix/index.ts";
 import todosExtension from "../todos/index.ts";
@@ -48,6 +49,7 @@ test("migrated extensions register without throwing", () => {
 
 	assert.doesNotThrow(() => opencodeGoFixExtension(pi));
 	assert.doesNotThrow(() => gitGuardrailsExtension(pi, { cwd } as never));
+	assert.doesNotThrow(() => githubReferencesExtension(pi));
 	assert.doesNotThrow(() => handoffExtension(pi));
 	assert.doesNotThrow(() => findDocsExtension(pi));
 	assert.doesNotThrow(() => polishStatuslineExtension(pi));

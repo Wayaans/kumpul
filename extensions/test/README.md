@@ -23,6 +23,7 @@ npm run check && npm test
 | `opencode-go-fix.test.ts` | Provider payload patches |
 | `git-guardrails.test.ts` | Pattern matching, config merge, status messages |
 | `find-docs.test.ts` | Formatting, tool priority, ctx7 bash detection |
+| `github-references.test.ts` | GitHub reference parsing, sorting, and filtering |
 | `smoke.test.ts` | Extension registration smoke test |
 
 Add new tests here — do not scatter test files inside individual extension directories.
