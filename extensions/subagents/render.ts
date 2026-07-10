@@ -16,6 +16,10 @@ function getTermWidth(): number {
 	return process.stdout.columns || 120;
 }
 
+function sanitizeMarkdownDisplayText(s: string): string {
+	return s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "");
+}
+
 function truncLine(text: string, maxWidth: number): string {
 	if (text.includes("\n") || text.includes("\r")) {
 		text = text.replace(/\r?\n/g, "↵ ");
@@ -191,7 +195,7 @@ export function renderSubagentCall(
 	c.addChild(new Text(`${theme.fg("toolTitle", theme.bold("subagent"))}${agentLabel}${cwdLabel}`, 0, 0));
 	if (args.task) {
 		c.addChild(new Spacer(1));
-		c.addChild(new Text(theme.fg("text", sanitizeDisplayText(args.task)), 0, 0));
+		c.addChild(new Markdown(sanitizeMarkdownDisplayText(args.task), 0, 0, getMarkdownTheme()));
 	}
 	return c;
 }

@@ -241,6 +241,21 @@ test("renderSubagentCall sanitizes raw pre-validation fields", () => {
 	assert.doesNotMatch(lines, /\x1b/);
 });
 
+test("renderSubagentCall preserves expanded task markdown", () => {
+	const theme = {
+		fg: (_: string, text: string) => text,
+		bold: (text: string) => text,
+	};
+	const rendered = renderSubagentCall(
+		{ alias: "implementer", task: "## Context\n- one\n- two" },
+		theme as never,
+		{ expanded: true },
+	);
+	const taskChild = (rendered as { children: Array<{ text?: string; constructor?: { name?: string } }> }).children.at(-1);
+	assert.equal(taskChild?.constructor?.name, "Markdown");
+	assert.equal(taskChild?.text, "## Context\n- one\n- two");
+});
+
 test("renderAgentProgress uses model as title and thinking in metadata", () => {
 	const theme = {
 		fg: (_: string, text: string) => text,

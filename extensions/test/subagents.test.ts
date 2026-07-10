@@ -405,6 +405,11 @@ test("buildPiArgs omits --model, --models, and --thinking when agent values are 
 	assert.equal(args.indexOf("--thinking"), -1);
 });
 
+test("buildPiArgs separates task label from markdown task body", async () => {
+	const { args } = await buildPiArgs(testAgent({ tools: ["read"] }), "## Context\n- keep markdown");
+	assert.ok(args.includes("Task:\n\n## Context\n- keep markdown"));
+});
+
 test("buildPiArgs does not inject pi-cursor-sdk for cursor/* models", async () => {
 	const agent = testAgent({ model: "cursor/composer-2.5", tools: ["read"] });
 	const { args } = await buildPiArgs(agent, "task");
@@ -559,7 +564,7 @@ test("buildPiArgs loads named skill allowlist without auto-invoking it", async (
 	assert.ok(noSkillsIdx >= 0, "expected --no-skills");
 	assert.ok(skillIdx > noSkillsIdx, "expected explicit skill after --no-skills");
 	assert.match(args[skillIdx + 1] ?? "", /skills\/test-driven-development\/SKILL\.md$/);
-	assert.ok(args.includes("Task: task"));
+	assert.ok(args.includes("Task:\n\ntask"));
 	assert.equal(args.some((arg) => arg.startsWith("/skill:")), false);
 });
 
@@ -568,7 +573,7 @@ test("buildPiArgs invokes active skills and auto-loads them", async () => {
 	const skillIdx = args.indexOf("--skill");
 	assert.ok(skillIdx >= 0, "expected active skill to be loaded");
 	assert.match(args[skillIdx + 1] ?? "", /skills\/test-driven-development\/SKILL\.md$/);
-	assert.ok(args.includes("/skill:test-driven-development\n\nTask: task"));
+	assert.ok(args.includes("/skill:test-driven-development\n\nTask:\n\ntask"));
 });
 
 test("buildPiArgs inserts task preamble after active skills and before task", async () => {
@@ -581,7 +586,7 @@ test("buildPiArgs inserts task preamble after active skills and before task", as
 		new Map(),
 		{ includeProject: true, taskPreamble: "  Use the implementer role.\n  Keep indentation." },
 	);
-	assert.ok(args.includes("/skill:test-driven-development\n\n  Use the implementer role.\n  Keep indentation.\n\nTask: do the work"));
+	assert.ok(args.includes("/skill:test-driven-development\n\n  Use the implementer role.\n  Keep indentation.\n\nTask:\n\ndo the work"));
 });
 
 test("skill allowlist resolves project skills before package skills", async () => {
@@ -1077,7 +1082,7 @@ console.log(JSON.stringify({ type: "agent_end", messages: [] }));
 		const output = result.content[0]?.text ?? "";
 		assert.match(output, /--model\nopenai-codex\/gpt-5\.4-mini/);
 		assert.match(output, /--thinking\nhigh/);
-		assert.match(output, /Use reviewer behavior\.\n\nTask: do the work/);
+		assert.match(output, /Use reviewer behavior\.\n\nTask:\n\ndo the work/);
 	} finally {
 		process.env.PATH = previousPath;
 	}

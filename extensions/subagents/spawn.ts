@@ -215,7 +215,7 @@ export async function buildPiArgs(
 	args.push("--append-system-prompt", promptPath);
 
 	const activeSkillInput = activeSkills.map((name) => `/skill:${name}`).join("\n\n");
-	const childInputParts = [activeSkillInput, options.taskPreamble, `Task: ${task}`].filter(Boolean);
+	const childInputParts = [activeSkillInput, options.taskPreamble, `Task:\n\n${task}`].filter(Boolean);
 	const childInput = childInputParts.join("\n\n");
 	const TASK_LIMIT = 8000;
 	if (childInput.length > TASK_LIMIT) {
