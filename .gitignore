@@ -7,3 +7,5 @@ extensions/**/node_modules/
 docs/todos/
 .opensrcs
 .DS_Store
+.jj/
+.git/

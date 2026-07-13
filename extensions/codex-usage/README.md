@@ -1,12 +1,14 @@
 # codex-usage
 
-Shows OpenAI Codex subscription usage (5-hour window) in the footer and via `/codex-limit`.
+Shows configurable OpenAI Codex subscription usage in the footer and via `/codex-limit`.
 
 ## Behavior
 
 - When the active model uses `openai-codex` with OAuth, fetches usage from ChatGPT's backend API after each agent turn (60s debounce).
-- Publishes `◷ NN%` via `ctx.ui.setStatus()` — with polish-statusline enabled, appears on the model line to the left of the provider prefix (not the extension-status row).
-- `/codex-limit` opens an interactive breakdown (5-hour + weekly bars) and can open the usage dashboard in your browser.
+- Publishes selected usage windows via `ctx.ui.setStatus()` — with polish-statusline enabled, they appear on the model line to the left of the provider prefix (not the extension-status row).
+- `/codex-limit` opens an interactive breakdown (5-hour + weekly bars), configures which windows appear in the footer, and can open the usage dashboard in your browser.
+- Footer choices are 5-hour only, 7-day only, or both. At least one remains enabled.
+- The global preference is stored in the pi agent directory as `codex-usage.json`; the default remains 5-hour only.
 
 ## Limits
 

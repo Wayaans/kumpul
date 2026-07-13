@@ -17,8 +17,12 @@ test("codex badge shows 5-hour usage percentage", () => {
 
 	const badge = createCodexBadge(snapshot);
 	assert.ok(badge);
-	assert.equal(badge.body, "◷ 73%");
-	assert.equal(formatCodexStatusText(snapshot), "◷ 73%");
+	assert.equal(badge.body, "◷ 5h 73%");
+	assert.equal(formatCodexStatusText(snapshot), "◷ 5h 73%");
+	assert.equal(
+		formatCodexStatusText(snapshot, { showFiveHour: true, showWeekly: true }),
+		"◷ 5h 73% · 7d 12%",
+	);
 });
 
 test("codex badge uses muted tone below 75%", () => {
@@ -54,16 +58,17 @@ test("codex badge uses error tone at 90%", () => {
 	assert.equal(badge.tone, "error");
 });
 
-test("codex badge shows 0% when fiveHour window is missing", () => {
+test("codex badge omits unavailable selected windows", () => {
 	const snapshot = {
-		fiveHour: undefined,
+		weekly: { usedPercent: 31, windowSeconds: 604800 },
 		fetchedAt: Date.now(),
 	};
 
-	const badge = createCodexBadge(snapshot);
-	assert.ok(badge);
-	assert.equal(badge.body, "◷ 0%");
-	assert.equal(badge.tone, "muted");
+	assert.equal(createCodexBadge(snapshot), undefined);
+	assert.equal(
+		createCodexBadge(snapshot, { showFiveHour: true, showWeekly: true })?.body,
+		"◷ 7d 31%",
+	);
 });
 
 function makeRenderRef() {
