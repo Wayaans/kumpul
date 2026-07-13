@@ -1,10 +1,13 @@
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import { execFile } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
 const USAGE_DASHBOARD_URL = "https://chatgpt.com/codex/settings/usage";
 const OPEN_DASHBOARD_LABEL = "Open usage dashboard";
+const CONFIG_PATH = join(getAgentDir(), "codex-usage.json");
 const FIVE_HOUR_SECONDS = 5 * 60 * 60;
 const WEEK_SECONDS = 7 * 24 * 60 * 60;
 const WARN_THRESHOLD = 75;
@@ -38,6 +41,32 @@ export type BadgeTone = "text" | "muted" | "dim" | "accent" | "warning" | "error
 export interface CodexBadge {
 	body: string;
 	tone: BadgeTone;
+}
+
+export type CodexUsagePreferences = {
+	showFiveHour: boolean;
+	showWeekly: boolean;
+};
+
+export const DEFAULT_CODEX_USAGE_PREFERENCES: CodexUsagePreferences = {
+	showFiveHour: true,
+	showWeekly: false,
+};
+
+export function loadCodexUsagePreferences(): CodexUsagePreferences {
+	try {
+		const value = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Partial<CodexUsagePreferences>;
+		const showFiveHour = typeof value.showFiveHour === "boolean" ? value.showFiveHour : true;
+		const showWeekly = typeof value.showWeekly === "boolean" ? value.showWeekly : false;
+		return showFiveHour || showWeekly ? { showFiveHour, showWeekly } : DEFAULT_CODEX_USAGE_PREFERENCES;
+	} catch {
+		return DEFAULT_CODEX_USAGE_PREFERENCES;
+	}
+}
+
+function saveCodexUsagePreferences(preferences: CodexUsagePreferences): void {
+	mkdirSync(getAgentDir(), { recursive: true });
+	writeFileSync(CONFIG_PATH, `${JSON.stringify(preferences, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
 function isOpenAICodexProvider(provider: string | undefined): boolean {
@@ -195,9 +224,24 @@ export class CodexUsageManager {
 	private lastFetchMs = 0;
 	private inFlight: Promise<CodexUsageSnapshot | undefined> | undefined;
 	private renderRef: RenderStateRef;
+	private preferences: CodexUsagePreferences;
 
-	constructor(renderRef: RenderStateRef) {
+	constructor(renderRef: RenderStateRef, preferences = DEFAULT_CODEX_USAGE_PREFERENCES) {
 		this.renderRef = renderRef;
+		this.preferences = { ...preferences };
+	}
+
+	get footerPreferences(): CodexUsagePreferences {
+		return { ...this.preferences };
+	}
+
+	setFooterPreference(key: keyof CodexUsagePreferences, enabled: boolean): boolean {
+		const next = { ...this.preferences, [key]: enabled };
+		if (!next.showFiveHour && !next.showWeekly) return false;
+		this.preferences = next;
+		saveCodexUsagePreferences(next);
+		this.renderRef.requestRender?.();
+		return true;
 	}
 
 	get snapshot(): CodexUsageSnapshot | undefined {
@@ -246,17 +290,30 @@ export class CodexUsageManager {
 	}
 }
 
-export function createCodexBadge(snapshot: CodexUsageSnapshot | undefined): CodexBadge | undefined {
+export function createCodexBadge(
+	snapshot: CodexUsageSnapshot | undefined,
+	preferences = DEFAULT_CODEX_USAGE_PREFERENCES,
+): CodexBadge | undefined {
 	if (!snapshot) return undefined;
-	const used = clampPercent(snapshot.fiveHour?.usedPercent);
+	const windows: Array<{ label: string; used: number }> = [];
+	if (preferences.showFiveHour && snapshot.fiveHour?.usedPercent !== undefined) {
+		windows.push({ label: "5h", used: clampPercent(snapshot.fiveHour.usedPercent) });
+	}
+	if (preferences.showWeekly && snapshot.weekly?.usedPercent !== undefined) {
+		windows.push({ label: "7d", used: clampPercent(snapshot.weekly.usedPercent) });
+	}
+	if (windows.length === 0) return undefined;
 	return {
-		body: `◷ ${used}%`,
-		tone: usageTone(used),
+		body: `◷ ${windows.map((window) => `${window.label} ${window.used}%`).join(" · ")}`,
+		tone: usageTone(Math.max(...windows.map((window) => window.used))),
 	};
 }
 
-export function formatCodexStatusText(snapshot: CodexUsageSnapshot | undefined): string | undefined {
-	return createCodexBadge(snapshot)?.body;
+export function formatCodexStatusText(
+	snapshot: CodexUsageSnapshot | undefined,
+	preferences = DEFAULT_CODEX_USAGE_PREFERENCES,
+): string | undefined {
+	return createCodexBadge(snapshot, preferences)?.body;
 }
 
 export function registerCodexLimitCommand(pi: ExtensionAPI, manager: CodexUsageManager): void {
@@ -274,7 +331,7 @@ export function registerCodexLimitCommand(pi: ExtensionAPI, manager: CodexUsageM
 				return;
 			}
 
-			const selected = await showCodexDetail(ctx, snapshot);
+			const selected = await showCodexDetail(ctx, snapshot, manager);
 			if (selected === OPEN_DASHBOARD_LABEL) {
 				openDashboard(ctx);
 			}
@@ -282,13 +339,23 @@ export function registerCodexLimitCommand(pi: ExtensionAPI, manager: CodexUsageM
 	});
 }
 
-async function showCodexDetail(ctx: ExtensionContext, snapshot: CodexUsageSnapshot): Promise<string | undefined> {
+async function showCodexDetail(
+	ctx: ExtensionContext,
+	snapshot: CodexUsageSnapshot,
+	manager: CodexUsageManager,
+): Promise<string | undefined> {
 	return ctx.ui.custom<string | undefined>((tui, theme: Theme, _keybindings, done) => {
 		let selectedIndex = 0;
 		let cachedLines: string[] | undefined;
 
-		const lines = buildDetailLines(snapshot, theme);
-		const actionIndex = lines.indexOf(OPEN_DASHBOARD_LABEL);
+		const buildLines = () => buildDetailLines(snapshot, theme, manager.footerPreferences);
+		let lines = buildLines();
+		const selectable = () => [
+			lines.indexOf(OPEN_DASHBOARD_LABEL),
+			lines.findIndex((line) => line.startsWith("5-hour usage")),
+			lines.findIndex((line) => line.startsWith("7-day usage")),
+		].filter((index) => index >= 0);
+		selectedIndex = selectable()[0] ?? 0;
 
 		const refresh = () => {
 			cachedLines = undefined;
@@ -296,18 +363,31 @@ async function showCodexDetail(ctx: ExtensionContext, snapshot: CodexUsageSnapsh
 		};
 
 		const handleInput = (data: string) => {
+			const selectableIndices = selectable();
+			const position = selectableIndices.indexOf(selectedIndex);
 			if (matchesKey(data, Key.up) || data === "k") {
-				selectedIndex = Math.max(0, selectedIndex - 1);
+				selectedIndex = selectableIndices[Math.max(0, position - 1)] ?? selectedIndex;
 				refresh();
 				return;
 			}
 			if (matchesKey(data, Key.down) || data === "j") {
-				selectedIndex = Math.min(lines.length - 1, selectedIndex + 1);
+				selectedIndex = selectableIndices[Math.min(selectableIndices.length - 1, position + 1)] ?? selectedIndex;
 				refresh();
 				return;
 			}
+			const actionIndex = lines.indexOf(OPEN_DASHBOARD_LABEL);
 			if (matchesKey(data, Key.enter) && selectedIndex === actionIndex) {
 				done(OPEN_DASHBOARD_LABEL);
+				return;
+			}
+			if (matchesKey(data, Key.enter) || matchesKey(data, Key.space)) {
+				const preferences = manager.footerPreferences;
+				const key = lines[selectedIndex]?.startsWith("5-hour usage") ? "showFiveHour" : "showWeekly";
+				if (!manager.setFooterPreference(key, !preferences[key])) {
+					ctx.ui.notify("At least one usage window must remain enabled.", "info");
+				}
+				lines = buildLines();
+				refresh();
 				return;
 			}
 			if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
@@ -328,7 +408,7 @@ async function showCodexDetail(ctx: ExtensionContext, snapshot: CodexUsageSnapsh
 
 			for (let i = 0; i < lines.length; i++) {
 				const selected = i === selectedIndex;
-				const actionable = i === actionIndex;
+				const actionable = selectable().includes(i);
 				const prefix = selected ? theme.fg("accent", "→ ") : "  ";
 				const color = selected ? "accent" : actionable ? "text" : "muted";
 				add(prefix + theme.fg(color, lines[i]!));
@@ -338,9 +418,9 @@ async function showCodexDetail(ctx: ExtensionContext, snapshot: CodexUsageSnapsh
 			add(
 				theme.fg(
 					"dim",
-					selectedIndex === actionIndex
-						? "↑↓ navigate • Enter to open dashboard • Esc/Ctrl+C cancel"
-						: "↑↓ navigate • Esc/Ctrl+C cancel",
+					selectedIndex === lines.indexOf(OPEN_DASHBOARD_LABEL)
+						? "↑↓ navigate • Enter to open dashboard • Esc/Ctrl+C close"
+						: "↑↓ navigate • Enter/Space toggle • Esc/Ctrl+C close",
 				),
 			);
 			add(theme.fg("accent", "─".repeat(width)));
@@ -364,7 +444,11 @@ function accentForTone(tone: BadgeTone): Parameters<Theme["fg"]>[0] {
 	}
 }
 
-function buildDetailLines(snapshot: CodexUsageSnapshot, theme: Theme): string[] {
+function buildDetailLines(
+	snapshot: CodexUsageSnapshot,
+	theme: Theme,
+	preferences: CodexUsagePreferences,
+): string[] {
 	const used5h = clampPercent(snapshot.fiveHour?.usedPercent);
 	const tone5h = usageTone(used5h);
 	const usedWeekly = clampPercent(snapshot.weekly?.usedPercent);
@@ -385,6 +469,10 @@ function buildDetailLines(snapshot: CodexUsageSnapshot, theme: Theme): string[] 
 	detailLines.push("");
 
 	detailLines.push(OPEN_DASHBOARD_LABEL);
+	detailLines.push("");
+	detailLines.push("Footer display");
+	detailLines.push(`5-hour usage  ${preferences.showFiveHour ? "on" : "off"}`);
+	detailLines.push(`7-day usage   ${preferences.showWeekly ? "on" : "off"}`);
 
 	return detailLines;
 }

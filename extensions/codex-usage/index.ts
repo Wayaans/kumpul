@@ -3,6 +3,7 @@ import {
 	CODEX_USAGE_STATUS_KEY,
 	CodexUsageManager,
 	formatCodexStatusText,
+	loadCodexUsagePreferences,
 	refreshCodexUsage,
 	registerCodexLimitCommand,
 } from "./usage.ts";
@@ -13,13 +14,16 @@ export default function (pi: ExtensionAPI): void {
 	}
 
 	let activeCtx: ExtensionContext | undefined;
-	const manager = new CodexUsageManager({
-		requestRender: () => {
-			if (activeCtx) {
-				updateStatus(activeCtx, manager);
-			}
+	const manager = new CodexUsageManager(
+		{
+			requestRender: () => {
+				if (activeCtx) {
+					updateStatus(activeCtx, manager);
+				}
+			},
 		},
-	});
+		loadCodexUsagePreferences(),
+	);
 
 	refreshCodexUsage(pi, manager);
 	registerCodexLimitCommand(pi, manager);
@@ -44,5 +48,8 @@ export default function (pi: ExtensionAPI): void {
 
 function updateStatus(ctx: ExtensionContext, manager: CodexUsageManager): void {
 	if (!ctx.hasUI) return;
-	ctx.ui.setStatus(CODEX_USAGE_STATUS_KEY, formatCodexStatusText(manager.snapshot));
+	ctx.ui.setStatus(
+		CODEX_USAGE_STATUS_KEY,
+		formatCodexStatusText(manager.snapshot, manager.footerPreferences),
+	);
 }
