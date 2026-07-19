@@ -10,13 +10,26 @@
  * 4. Submits the compiled answers when done
  */
 
-import { complete, type Model, type Api, type UserMessage } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import {
+	completeSimple,
+	getSupportedThinkingLevels,
+	type Api,
+	type AssistantMessage,
+	type Model,
+	type UserMessage,
+} from "@earendil-works/pi-ai";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	KeybindingsManager,
+	ModelRegistry,
+} from "@earendil-works/pi-coding-agent";
 import { BorderedLoader } from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
 	Editor,
 	type EditorTheme,
+	type Focusable,
 	Key,
 	matchesKey,
 	truncateToWidth,
@@ -24,11 +37,20 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import {
+	type AnswerConfig,
+	type AnswerThinkingLevel,
+	getProjectAnswerConfigPath,
+	loadMergedAnswerConfig,
+	parseAnswerModelRef,
+	updateProjectAnswerConfig,
+} from "./config.ts";
 
 // Structured output format for question extraction
 interface ExtractedQuestion {
 	question: string;
 	context?: string;
+	recommendation?: string;
 }
 
 interface ExtractionResult {
@@ -52,46 +74,48 @@ const TRANSIENT_EXTRACTION_ERROR_PATTERNS = [
 	"internal server",
 	"network",
 	"connection",
-]
+	"fetch failed",
+	"socket",
+	"econn",
+];
 
-const SYSTEM_PROMPT = `You are a question extractor. Given text from a conversation, extract any questions that need answering.
+export const QUESTION_EXTRACTION_SYSTEM_PROMPT = `You are a decision-question extractor. Given text from a conversation, identify every unresolved question or decision that needs user input.
 
 Output a JSON object with this structure:
 {
   "questions": [
     {
-      "question": "The question text",
-      "context": "Optional context that helps answer the question"
+      "question": "A clear standalone question",
+      "context": "Optional details needed to make the decision",
+      "recommendation": "Optional explicit suggested answer without a label"
     }
   ]
 }
 
 Rules:
-- Extract all questions that require user input
+- Extract every explicit question and unresolved decision that requires user input
 - Keep questions in the order they appeared
-- Be concise with question text
-- Include context only when it provides essential information for answering
+- Rewrite each decision as a clear, direct, standalone question
+- Preserve the full intent: retain every option, constraint, qualifier, caveat, and default that could change the answer
+- Keep the question focused; put supporting decision details in context instead of copying the entire source section
+- Do not use numbered headings or section titles as questions
+- Do not include markdown heading or list prefixes that are only source formatting
+- Include recommendation only when the source explicitly recommends an answer or option
+- Write recommendation as answer-ready text without labels such as "Recommendation:", "Recommended answer:", or "Suggested answer:"
+- Preserve all requirements in the recommendation, but omit its heading and introductory preamble
+- Never invent a recommendation
 - If no questions are found, return {"questions": []}
 
 Example output:
 {
   "questions": [
     {
-      "question": "What is your preferred database?",
-      "context": "We can only configure MySQL and PostgreSQL because of what is implemented."
-    },
-    {
-      "question": "Should we use TypeScript or JavaScript?"
+      "question": "What ownership, file-type, link-count, permission, filesystem, and symlink rules should managed paths enforce?",
+      "context": "The accepted policy needs exact defaults that can be tested.",
+      "recommendation": "Require current-user ownership, expected file types, one final hard link, exact modes, one supported local filesystem, and no symlinks beneath the managed directory."
     }
   ]
 }`;
-
-/** Extraction model preference order (first match with auth wins). */
-const EXTRACTION_MODEL_PREFERENCES = [
-	{ provider: "openai-codex", id: "gpt-5.3-codex" },
-	{ provider: "openai-codex", id: "gpt-5.3" },
-	{ provider: "anthropic", id: "claude-haiku-4-5" },
-] as const;
 
 function modelKey(model: Model<Api>): string {
 	return `${model.provider}/${model.id}`;
@@ -123,15 +147,35 @@ async function isExtractionModelReady(
 ): Promise<boolean> {
 	if (model.provider === "cursor") return true;
 
-	const auth = await modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok) return false;
-	if (auth.apiKey) return true;
-	if (modelRegistry.isUsingOAuth(model)) return true;
-	return modelRegistry.getProviderAuthStatus(model.provider).configured;
+	try {
+		const auth = await modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth.ok) return false;
+		if (auth.apiKey) return true;
+		if (modelRegistry.isUsingOAuth(model)) return true;
+		return modelRegistry.getProviderAuthStatus(model.provider).configured;
+	} catch {
+		return false;
+	}
 }
 
-/** Preferred models with working auth, then session model (deduped). */
+export function resolveExtractionThinking(
+	model: Model<Api>,
+	thinking: AnswerThinkingLevel,
+): AnswerThinkingLevel {
+	const supported = new Set(getSupportedThinkingLevels(model).map(String));
+	if (supported.has(thinking)) return thinking;
+	if (thinking === "max") {
+		const fallback = ["xhigh", "high", "medium", "low", "minimal", "off"].find((level) =>
+			supported.has(level),
+		);
+		return (fallback as AnswerThinkingLevel | undefined) ?? "off";
+	}
+	return thinking;
+}
+
+/** Configured model with working auth, then session model (deduped). */
 async function getExtractionModelCandidates(
+	configuredModelRef: string,
 	currentModel: Model<Api>,
 	modelRegistry: ModelRegistry,
 ): Promise<Model<Api>[]> {
@@ -145,11 +189,11 @@ async function getExtractionModelCandidates(
 		candidates.push(model);
 	};
 
-	for (const pref of EXTRACTION_MODEL_PREFERENCES) {
-		const model = modelRegistry.find(pref.provider, pref.id);
-		if (!model) continue;
-		if (await isExtractionModelReady(model, modelRegistry)) {
-			add(model);
+	const configuredRef = parseAnswerModelRef(configuredModelRef);
+	if (configuredRef) {
+		const configuredModel = modelRegistry.find(configuredRef.provider, configuredRef.modelId);
+		if (configuredModel && (await isExtractionModelReady(configuredModel, modelRegistry))) {
+			add(configuredModel);
 		}
 	}
 
@@ -204,6 +248,12 @@ function extractFirstJsonObject(text: string): string | undefined {
 	return undefined;
 }
 
+const RECOMMENDATION_LABEL_RE = /^\s*(?:[-*]\s*)?\*{0,2}(?:recommendation|recommended answer|suggested answer)\s*(?::|[-–—])?\*{0,2}\s*(?::|[-–—])?\s*/i;
+
+function normalizeRecommendation(value: string): string {
+	return value.trim().replace(RECOMMENDATION_LABEL_RE, "").trim();
+}
+
 function parseExtractionQuestions(value: unknown): ExtractedQuestion[] {
 	if (!Array.isArray(value)) return [];
 
@@ -223,6 +273,13 @@ function parseExtractionQuestions(value: unknown): ExtractedQuestion[] {
 			const context = item.context.trim();
 			if (context) {
 				entry.context = context;
+			}
+		}
+
+		if (typeof item.recommendation === "string") {
+			const recommendation = normalizeRecommendation(item.recommendation);
+			if (recommendation) {
+				entry.recommendation = recommendation;
 			}
 		}
 
@@ -252,17 +309,28 @@ export function parseExtractionResult(text: string): ExtractionResult | null {
 	}
 }
 
+export function getRecommendationPrefill(
+	currentAnswer: string,
+	recommendation: string | undefined,
+): string | undefined {
+	if (currentAnswer.trim()) return undefined;
+	const prefill = recommendation?.trim();
+	return prefill || undefined;
+}
+
 /**
  * Interactive Q&A component for answering extracted questions
  */
-class QnAComponent implements Component {
+class QnAComponent implements Component, Focusable {
 	private questions: ExtractedQuestion[];
 	private answers: string[];
 	private currentIndex: number = 0;
 	private editor: Editor;
 	private tui: TUI;
+	private keybindings: KeybindingsManager;
 	private onDone: (result: string | null) => void;
 	private showingConfirmation: boolean = false;
+	private _focused: boolean = false;
 
 	// Cache
 	private cachedWidth?: number;
@@ -276,14 +344,25 @@ class QnAComponent implements Component {
 	private yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
 	private gray = (s: string) => `\x1b[90m${s}\x1b[0m`;
 
+	get focused(): boolean {
+		return this._focused;
+	}
+
+	set focused(value: boolean) {
+		this._focused = value;
+		this.editor.focused = value;
+	}
+
 	constructor(
 		questions: ExtractedQuestion[],
 		tui: TUI,
+		keybindings: KeybindingsManager,
 		onDone: (result: string | null) => void,
 	) {
 		this.questions = questions;
 		this.answers = questions.map(() => "");
 		this.tui = tui;
+		this.keybindings = keybindings;
 		this.onDone = onDone;
 
 		// Create a minimal theme for the editor
@@ -351,11 +430,11 @@ class QnAComponent implements Component {
 	handleInput(data: string): void {
 		// Handle confirmation dialog
 		if (this.showingConfirmation) {
-			if (matchesKey(data, Key.enter) || data.toLowerCase() === "y") {
+			if (this.keybindings.matches(data, "tui.select.confirm") || data.toLowerCase() === "y") {
 				this.submit();
 				return;
 			}
-			if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) || data.toLowerCase() === "n") {
+			if (this.keybindings.matches(data, "tui.select.cancel") || data.toLowerCase() === "n") {
 				this.showingConfirmation = false;
 				this.invalidate();
 				this.tui.requestRender();
@@ -365,13 +444,25 @@ class QnAComponent implements Component {
 		}
 
 		// Global navigation and commands
-		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
+		if (this.keybindings.matches(data, "tui.select.cancel")) {
 			this.cancel();
 			return;
 		}
 
+		const currentQuestion = this.questions[this.currentIndex];
+		if (currentQuestion.recommendation && matchesKey(data, Key.ctrl("r"))) {
+			const prefill = getRecommendationPrefill(this.editor.getText(), currentQuestion.recommendation);
+			if (prefill !== undefined) {
+				this.editor.setText(prefill);
+				this.saveCurrentAnswer();
+				this.invalidate();
+				this.tui.requestRender();
+			}
+			return;
+		}
+
 		// Tab / Shift+Tab for navigation
-		if (matchesKey(data, Key.tab)) {
+		if (this.keybindings.matches(data, "tui.input.tab")) {
 			if (this.currentIndex < this.questions.length - 1) {
 				this.navigateTo(this.currentIndex + 1);
 				this.tui.requestRender();
@@ -386,16 +477,15 @@ class QnAComponent implements Component {
 			return;
 		}
 
-		// Arrow up/down for question navigation when editor is empty
-		// (Editor handles its own cursor navigation when there's content)
-		if (matchesKey(data, Key.up) && this.editor.getText() === "") {
+		// Up/down navigates questions when the editor is empty.
+		if (this.keybindings.matches(data, "tui.editor.cursorUp") && this.editor.getText() === "") {
 			if (this.currentIndex > 0) {
 				this.navigateTo(this.currentIndex - 1);
 				this.tui.requestRender();
 				return;
 			}
 		}
-		if (matchesKey(data, Key.down) && this.editor.getText() === "") {
+		if (this.keybindings.matches(data, "tui.editor.cursorDown") && this.editor.getText() === "") {
 			if (this.currentIndex < this.questions.length - 1) {
 				this.navigateTo(this.currentIndex + 1);
 				this.tui.requestRender();
@@ -403,15 +493,16 @@ class QnAComponent implements Component {
 			}
 		}
 
-		// Handle Enter ourselves (editor's submit is disabled)
-		// Plain Enter moves to next question or shows confirmation on last question
-		// Shift+Enter adds a newline (handled by editor)
-		if (matchesKey(data, Key.enter) && !matchesKey(data, Key.shift("enter"))) {
+		// Plain submit moves to the next question or confirms the final answer.
+		// The configured newline key is handled by the editor.
+		if (
+			this.keybindings.matches(data, "tui.input.submit") &&
+			!this.keybindings.matches(data, "tui.input.newLine")
+		) {
 			this.saveCurrentAnswer();
 			if (this.currentIndex < this.questions.length - 1) {
 				this.navigateTo(this.currentIndex + 1);
 			} else {
-				// On last question - show confirmation
 				this.showingConfirmation = true;
 			}
 			this.invalidate();
@@ -419,7 +510,6 @@ class QnAComponent implements Component {
 			return;
 		}
 
-		// Pass to editor
 		this.editor.handleInput(data);
 		this.invalidate();
 		this.tui.requestRender();
@@ -495,6 +585,15 @@ class QnAComponent implements Component {
 			}
 		}
 
+		if (q.recommendation) {
+			lines.push(padToWidth(emptyBoxLine()));
+			const recommendationText = `${this.yellow("Recommendation:")} ${q.recommendation}`;
+			const wrappedRecommendation = wrapTextWithAnsi(recommendationText, contentWidth);
+			for (const line of wrappedRecommendation) {
+				lines.push(padToWidth(boxLine(line)));
+			}
+		}
+
 		lines.push(padToWidth(emptyBoxLine()));
 
 		// Render the editor component (multi-line input) with padding
@@ -521,7 +620,10 @@ class QnAComponent implements Component {
 			lines.push(padToWidth(boxLine(truncateToWidth(confirmMsg, contentWidth))));
 		} else {
 			lines.push(padToWidth(this.dim("├" + horizontalLine(boxWidth - 2) + "┤")));
-			const controls = `${this.dim("Tab/Enter")} next · ${this.dim("Shift+Tab")} prev · ${this.dim("Shift+Enter")} newline · ${this.dim("Esc")} cancel`;
+			const recommendationControl = q.recommendation
+				? ` · ${this.dim("Ctrl+R")} use recommendation`
+				: "";
+			const controls = `${this.dim("Tab/Enter")} next · ${this.dim("Shift+Tab")} prev · ${this.dim("Shift+Enter")} newline${recommendationControl} · ${this.dim("Esc")} cancel`;
 			lines.push(padToWidth(boxLine(truncateToWidth(controls, contentWidth))));
 		}
 		lines.push(padToWidth(this.dim("╰" + horizontalLine(boxWidth - 2) + "╯")));
@@ -532,9 +634,92 @@ class QnAComponent implements Component {
 	}
 }
 
+function isProjectTrusted(ctx: ExtensionContext): boolean {
+	return (
+		(ctx as ExtensionContext & { isProjectTrusted?: () => boolean }).isProjectTrusted?.() ?? false
+	);
+}
+
+function hasInteractiveTui(ctx: ExtensionContext): boolean {
+	const mode = (ctx as ExtensionContext & { mode?: string }).mode;
+	return mode === undefined ? ctx.hasUI : mode === "tui";
+}
+
+async function showAnswerConfig(ctx: ExtensionContext): Promise<void> {
+	if (!hasInteractiveTui(ctx)) {
+		ctx.ui.notify("answer-config requires interactive mode", "error");
+		return;
+	}
+	if (!isProjectTrusted(ctx)) {
+		ctx.ui.notify("Trust this project before saving answer configuration", "error");
+		return;
+	}
+
+	let currentConfig: AnswerConfig;
+	try {
+		currentConfig = loadMergedAnswerConfig(ctx.cwd);
+	} catch (error) {
+		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+		return;
+	}
+
+	const modelRefs = [...new Set(ctx.modelRegistry.getAvailable().map(modelKey))].sort((a, b) => {
+		if (a === currentConfig.model) return -1;
+		if (b === currentConfig.model) return 1;
+		return a.localeCompare(b);
+	});
+	if (modelRefs.length === 0) {
+		ctx.ui.notify("No authenticated models are available", "error");
+		return;
+	}
+
+	const selectedModelRef = await ctx.ui.select(
+		`Answer model (current: ${currentConfig.model})`,
+		modelRefs,
+	);
+	if (!selectedModelRef) return;
+
+	const selectedRef = parseAnswerModelRef(selectedModelRef);
+	const selectedModel = selectedRef
+		? ctx.modelRegistry.find(selectedRef.provider, selectedRef.modelId)
+		: undefined;
+	if (!selectedModel) {
+		ctx.ui.notify(`Model not found: ${selectedModelRef}`, "error");
+		return;
+	}
+
+	const thinkingLevels = getSupportedThinkingLevels(selectedModel).map(String).sort((a, b) => {
+		if (a === currentConfig.thinking) return -1;
+		if (b === currentConfig.thinking) return 1;
+		return 0;
+	});
+	const selectedThinking = await ctx.ui.select(
+		`Answer thinking (current: ${currentConfig.thinking})`,
+		thinkingLevels,
+	);
+	if (!selectedThinking) return;
+
+	const configPath = getProjectAnswerConfigPath(ctx.cwd);
+	const confirmed = await ctx.ui.confirm(
+		"Save answer configuration?",
+		`${selectedModelRef} · thinking: ${selectedThinking}\n${configPath}`,
+	);
+	if (!confirmed) return;
+
+	try {
+		updateProjectAnswerConfig(ctx.cwd, {
+			model: selectedModelRef,
+			thinking: selectedThinking as AnswerThinkingLevel,
+		});
+		ctx.ui.notify(`Answer configuration saved to ${configPath}`, "info");
+	} catch (error) {
+		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	const answerHandler = async (ctx: ExtensionContext) => {
-			if (!ctx.hasUI) {
+			if (!hasInteractiveTui(ctx)) {
 				ctx.ui.notify("answer requires interactive mode", "error");
 				return;
 			}
@@ -544,6 +729,16 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			const sessionModel = ctx.model;
+
+			let answerConfig: AnswerConfig;
+			try {
+				answerConfig = loadMergedAnswerConfig(ctx.cwd, {
+					includeProject: isProjectTrusted(ctx),
+				});
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				return;
+			}
 
 			// Find the last assistant message on the current branch
 			const branch = ctx.sessionManager.getBranch();
@@ -584,7 +779,11 @@ export default function (pi: ExtensionAPI) {
 				};
 
 				const doExtract = async () => {
-					const candidates = await getExtractionModelCandidates(sessionModel, ctx.modelRegistry);
+					const candidates = await getExtractionModelCandidates(
+						answerConfig.model,
+						sessionModel,
+						ctx.modelRegistry,
+					);
 					let lastError: Error | undefined;
 					const userMessage: UserMessage = {
 						role: "user",
@@ -595,7 +794,17 @@ export default function (pi: ExtensionAPI) {
 					for (let i = 0; i < candidates.length; i++) {
 						const model = candidates[i];
 						const modelLabel = `${model.provider}/${model.id}`;
-						const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+						let auth: Awaited<ReturnType<ModelRegistry["getApiKeyAndHeaders"]>>;
+						try {
+							auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+						} catch (error) {
+							const message = error instanceof Error ? error.message : String(error);
+							lastError = new Error(`${modelLabel} auth failed: ${message}`);
+							if (i < candidates.length - 1 && isRecoverableExtractionError(message)) {
+								continue;
+							}
+							throw lastError;
+						}
 						if (!auth.ok) {
 							lastError = new Error(`${modelLabel} auth failed: ${auth.error}`);
 							if (i < candidates.length - 1 && isRecoverableExtractionError(auth.error)) {
@@ -604,11 +813,39 @@ export default function (pi: ExtensionAPI) {
 							throw lastError;
 						}
 
-						const response = await complete(
-							model,
-							{ systemPrompt: SYSTEM_PROMPT, messages: [userMessage] },
-							{ apiKey: auth.apiKey ?? "", headers: auth.headers, signal: loader.signal },
-						);
+						const reasoning = resolveExtractionThinking(model, answerConfig.thinking);
+						let response: AssistantMessage;
+						try {
+							response = await completeSimple(
+								model,
+								{ systemPrompt: QUESTION_EXTRACTION_SYSTEM_PROMPT, messages: [userMessage] },
+								{
+									apiKey: auth.apiKey ?? "",
+									headers: auth.headers,
+									signal: loader.signal,
+									// max is supported by current pi but absent from the repo's 0.78 typings.
+									...(reasoning === undefined
+										? {}
+										: {
+												reasoning: reasoning as Exclude<
+													AnswerThinkingLevel,
+													"off" | "max"
+												>,
+											}),
+								},
+							);
+						} catch (error) {
+							if (loader.signal.aborted) {
+								extractionCancelled = true;
+								return null;
+							}
+							const message = error instanceof Error ? error.message : String(error);
+							lastError = new Error(`${modelLabel} failed: ${message}`);
+							if (i < candidates.length - 1 && isRecoverableExtractionError(message)) {
+								continue;
+							}
+							throw lastError;
+						}
 
 						if (response.stopReason === "aborted") {
 							extractionCancelled = true;
@@ -668,8 +905,8 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Show the Q&A component
-			const answersResult = await ctx.ui.custom<string | null>((tui, _theme, _kb, done) => {
-				return new QnAComponent(extractionResult.questions, tui, done);
+			const answersResult = await ctx.ui.custom<string | null>((tui, _theme, keybindings, done) => {
+				return new QnAComponent(extractionResult.questions, tui, keybindings, done);
 			});
 
 			if (answersResult === null) {
@@ -691,6 +928,11 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("answer", {
 		description: "Extract questions from last assistant message into interactive Q&A",
 		handler: (_args, ctx) => answerHandler(ctx),
+	});
+
+	pi.registerCommand("answer-config", {
+		description: "Configure the project-specific answer model and thinking level",
+		handler: (_args, ctx) => showAnswerConfig(ctx),
 	});
 
 	pi.registerShortcut("ctrl+.", {
